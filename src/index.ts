@@ -23,7 +23,9 @@
 // ─── Storage Adapters ────────────────────────────────────────────────────────
 export type { MeshgateStorageAdapter } from './adapters/types.js';
 export { NoopAdapter } from './adapters/noop-adapter.js';
-// FileSystemAdapter and CloudflareKVAdapter — implemented in Phase 3 (MG22-005, MG22-006)
+export { FileSystemAdapter } from './adapters/fs-adapter.js';
+export { CloudflareKVAdapter } from './adapters/kv-adapter.js';
+export type { KVNamespaceLike } from './adapters/kv-adapter.js';
 
 // ─── Core Types ──────────────────────────────────────────────────────────────
 export type {
