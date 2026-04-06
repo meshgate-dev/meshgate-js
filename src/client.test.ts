@@ -8,7 +8,7 @@
  *   Tier 1 — constructor validation (no I/O)
  *   Tier 2 — guard() allowed / blocked flows (mock HTTP)
  *   Tier 3 — guard() gated flow (mock HTTP + mock SSE stream)
- *   Tier 4 — reconcile() (mock HTTP + mock adapter)
+ *   Tier 4 — startup reconcile (mock HTTP + mock adapter)
  *   Tier 5 — @guardrail decorator
  */
 
@@ -28,7 +28,13 @@ import {
   MeshgateSerializationError,
   MeshgateTamperError,
 } from './errors.js';
-import type { GateInfo, StoredGateRecord } from './types.js';
+import type { GateInfo, ReconcileResult, StoredGateRecord } from './types.js';
+
+// Test-only helper: access the private _reconcile() method without exposing it
+// in the public API surface.
+function reconcile(client: MeshgateClient): Promise<ReconcileResult> {
+  return (client as unknown as { _reconcile(): Promise<ReconcileResult> })._reconcile();
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -554,14 +560,14 @@ describe('validateIntentArgsFlatness', () => {
   });
 });
 
-// ─── §9 — reconcile() ────────────────────────────────────────────────────────
+// ─── §9 — startup reconcile (_reconcile) ────────────────────────────────────
 
-describe('MeshgateClient — reconcile()', () => {
+describe('MeshgateClient — startup reconcile', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('returns all-empty result when adapter has no keys', async () => {
     const client = makeClient({ storageAdapter: new NoopAdapter() });
-    const result = await client.reconcile();
+    const result = await reconcile(client);
     expect(result).toEqual({
       resumed: [],
       rejected: [],
@@ -595,7 +601,7 @@ describe('MeshgateClient — reconcile()', () => {
     const onGateExpired = vi.fn();
     const client = makeClient({ storageAdapter: adapter, hooks: { onGateExpired } });
 
-    const result = await client.reconcile();
+    const result = await reconcile(client);
     expect(result.expired).toHaveLength(1);
     expect(result.expired[0]?.approvalId).toBe(approvalId);
     expect(onGateExpired).toHaveBeenCalledOnce();
@@ -635,7 +641,7 @@ describe('MeshgateClient — reconcile()', () => {
     const onGateRejected = vi.fn();
     const client = makeClient({ storageAdapter: adapter, hooks: { onGateRejected } });
 
-    const result = await client.reconcile();
+    const result = await reconcile(client);
     expect(result.rejected).toHaveLength(1);
     expect(onGateRejected).toHaveBeenCalledOnce();
   });
@@ -667,7 +673,7 @@ describe('MeshgateClient — reconcile()', () => {
     const onGateOrphaned = vi.fn();
     const client = makeClient({ storageAdapter: adapter, hooks: { onGateOrphaned } });
 
-    const result = await client.reconcile();
+    const result = await reconcile(client);
     expect(result.orphaned).toHaveLength(1);
     expect(onGateOrphaned).toHaveBeenCalledOnce();
   });
@@ -709,7 +715,7 @@ describe('MeshgateClient — reconcile()', () => {
     const client = makeClient({ storageAdapter: adapter, hooks: { onGateOrphaned } });
     // No guard() registered for 'unregistered_intent'
 
-    const result = await client.reconcile();
+    const result = await reconcile(client);
     expect(result.orphaned).toHaveLength(1);
     expect(onGateOrphaned).toHaveBeenCalledOnce();
   });
@@ -755,15 +761,15 @@ describe('MeshgateClient — reconcile()', () => {
     const client = makeClient({ storageAdapter: adapter });
     client.guard(async () => 'from_sse', { intent: 'pending_intent' });
 
-    const result = await client.reconcile();
+    const result = await reconcile(client);
     expect(result.pending).toHaveLength(1);
     expect(result.pending[0]?.approvalId).toBe(approvalId);
   });
 
   it('is idempotent — calling twice on empty adapter returns empty both times', async () => {
     const client = makeClient();
-    const r1 = await client.reconcile();
-    const r2 = await client.reconcile();
+    const r1 = await reconcile(client);
+    const r2 = await reconcile(client);
     expect(r1).toEqual(r2);
   });
 });

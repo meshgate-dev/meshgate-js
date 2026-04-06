@@ -126,11 +126,11 @@ export class MeshgateClient {
 
     this.adapter = config.storageAdapter ?? new FileSystemAdapter();
 
-    // Fire reconcile in background. The first await inside _reconcileOnStartup()
+    // Fire startup reconcile in background. The first await inside _reconcileOnStartup()
     // (adapter.listKeys()) yields to the event loop, so any synchronous guard()
     // calls made after construction will have registered their handlers before
-    // reconcile begins scanning.
-    void this.reconcile();
+    // the scan begins.
+    void this._reconcile();
   }
 
   // ─── guard() ─────────────────────────────────────────────────────────────────
@@ -162,20 +162,16 @@ export class MeshgateClient {
     return (...args: TArgs) => this._executeGuard(fn, options, args);
   }
 
-  // ─── reconcile() ─────────────────────────────────────────────────────────────
+  // ─── Private: startup reconcile ──────────────────────────────────────────────
 
   /**
-   * Scan the storage adapter for pending gates and resume any that have been
-   * approved, clean up terminal states, and re-subscribe SSE for still-pending gates.
+   * Internal: scan the storage adapter for pending gates, resume approved ones,
+   * clean up terminal states, and re-subscribe SSE for still-pending gates.
    *
-   * **Call order:** register all guards first, then call `reconcile()`. Handlers
-   * registered after `reconcile()` returns will not be found for approved gates.
-   *
-   * If a reconcile is already in progress (e.g., from the background auto-start
-   * in the constructor), returns the same in-progress Promise rather than
-   * starting a second concurrent scan. Safe to call multiple times (idempotent).
+   * Called automatically from the constructor. Deduplicates concurrent calls
+   * by returning the in-progress Promise if one is already running.
    */
-  reconcile(): Promise<ReconcileResult> {
+  private _reconcile(): Promise<ReconcileResult> {
     if (!this.reconcilePromise) {
       this.reconcilePromise = this._reconcileOnStartup().finally(() => {
         this.reconcilePromise = null;

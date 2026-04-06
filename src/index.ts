@@ -35,7 +35,6 @@ export type {
   GuardOptions,
   GateInfo,
   GateLifecycleHook,
-  ReconcileResult,
 } from './types.js';
 
 // ─── Error Classes ───────────────────────────────────────────────────────────

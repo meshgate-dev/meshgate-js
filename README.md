@@ -124,35 +124,22 @@ class PaymentService {
 
 **Note on `this` binding:** `@guardrail` captures `this` per-call via a shared reference. Safe for single-instance classes and methods that don't read `this`. For multi-instance concurrent usage where the method reads `this`, use `client.guard()` directly.
 
-## `reconcile()` — Cold Resume After Restart
+## Cold Resume After Restart
 
-Gates pending when your process restarted are stored encrypted in the adapter. Call `reconcile()` on startup after registering all guards:
+Gates pending when your process restarted are stored encrypted in the adapter. The `MeshgateClient` constructor automatically scans for and resumes them in the background — no explicit call required. Register all `guard()` functions before constructing the client so the handlers are available when the scan runs.
 
 ```typescript
-const client = new MeshgateClient({ ... });
-
-// Register all guards first — handlers must be available before reconcile scans
+// Register handlers first — they must be available before the background scan runs
 const gatedRefund = client.guard(processRefund, { intent: 'process_refund' });
 const gatedDelete = client.guard(deleteAccount, { intent: 'delete_account' });
 
-// Reconcile — resumes approved gates, cleans up terminal states, re-subscribes pending
-const { resumed, rejected, expired, orphaned, pending } = await client.reconcile();
-console.log(`Resumed ${resumed.length} gates, ${pending.length} still waiting.`);
+// Construction triggers the background scan automatically.
+// Approved gates are re-executed, terminal states are cleaned up,
+// and still-pending gates are re-subscribed to the SSE stream.
+const client = new MeshgateClient({ ... });
 ```
 
-`reconcile()` fires automatically in the constructor background. The explicit call after guard registration ensures handlers are registered before the scan runs. If a reconcile is already in progress, concurrent calls join the same Promise.
-
-### `ReconcileResult`
-
-```typescript
-interface ReconcileResult {
-  resumed:  GateInfo[]; // approved, executed, and cleaned up
-  rejected: GateInfo[]; // rejected by a human approver
-  expired:  GateInfo[]; // TTL elapsed before approval
-  orphaned: GateInfo[]; // token burned, record not found, or no handler registered
-  pending:  GateInfo[]; // still awaiting — SSE re-subscribed
-}
-```
+Use lifecycle hooks (`onGateApproved`, `onGateRejected`, `onGateExpired`, `onGateOrphaned`) to observe the outcomes of resumed gates.
 
 ## Storage Adapters
 

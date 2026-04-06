@@ -223,8 +223,8 @@ export interface GateInfo {
 // ─── reconcile() Result ───────────────────────────────────────────────────────
 
 /**
- * The result returned by `client.reconcile()` after processing all pending
- * gates in the storage adapter.
+ * The result returned by the internal startup reconcile scan after processing
+ * all pending gates in the storage adapter.
  *
  * All arrays contain `GateInfo` objects for the corresponding terminal state.
  * An empty array means no gates reached that state during this reconcile run.
