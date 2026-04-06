@@ -36,6 +36,12 @@ export interface StoredGateRecord {
   authTag: string;
   /** Base64-encoded AES-256-GCM ciphertext of the serialized GatePayload. */
   ciphertext: string;
+  /**
+   * Unix ms timestamp of when this gate was created. Written by the SDK at
+   * gate registration time. Used by reconcile() to sort pending gates FIFO.
+   * Optional for backwards-compat with records written before v2.3.
+   */
+  createdAt?: number;
 }
 
 /**
@@ -61,6 +67,41 @@ export interface GatePayload {
  * executing the wrapped function.
  */
 export type GateLifecycleHook = (gate: GateInfo) => void | Promise<void>;
+
+/**
+ * Specific reason codes for gate orphaning. Passed to `onGateOrphaned`.
+ *
+ * - `token_exhausted_on_retry`: The SDK burned the token server-side but lost
+ *   the 200 response (network drop). A subsequent retry got 403 token_exhausted.
+ *   This SDK instance had the in-flight call when the 403 arrived.
+ * - `token_already_used`: The server returned 403 token_exhausted but this SDK
+ *   instance had no prior in-flight call for this gate. Another process likely
+ *   consumed the token.
+ * - `gate_not_found`: The approval record was not found in the cloud (404) or
+ *   the intent handler was removed between deploys.
+ * - `decryption_failed`: AES-256-GCM decryption failed during reconcile. Most
+ *   likely cause: MESHGATE_LOCAL_SECRET was rotated between gate creation and
+ *   reconcile. The wrapped function is NOT called.
+ * - `verify_failed`: A catch-all for unexpected terminal conditions during
+ *   reconcile or the live guard flow.
+ */
+export type GateOrphanedReason =
+  | 'token_exhausted_on_retry'
+  | 'token_already_used'
+  | 'gate_not_found'
+  | 'decryption_failed'
+  | 'verify_failed';
+
+/**
+ * Event passed to the `onGateOrphaned` lifecycle hook.
+ *
+ * This is a type alias for `GateInfo` — the `reason` and `message` fields
+ * defined on `GateInfo` are always populated when a gate info object is passed
+ * to `onGateOrphaned`. Using a type alias (rather than a separate interface)
+ * preserves backward compatibility: existing consumers that access `.approvalId`,
+ * `.intent`, or `.expiresAt` continue to work without any changes.
+ */
+export type GateOrphanedEvent = GateInfo;
 
 /**
  * Configuration for `MeshgateClient`.
@@ -119,10 +160,16 @@ export interface MeshgateConfig {
     /** Called when a human rejects an approval. */
     onGateRejected?: GateLifecycleHook;
     /**
-     * Called when a gate's token has already been burned (consumed by another
-     * process), or when the approval record cannot be found.
+     * Called when a gate is orphaned. Receives a `GateInfo` (aliased as
+     * `GateOrphanedEvent`) with the `reason` and `message` fields populated.
+     *
+     * Because `GateOrphanedEvent` is a type alias for `GateInfo`, existing
+     * callbacks that accept `GateInfo` continue to work without modification.
+     *
+     * Reasons: `token_exhausted_on_retry`, `token_already_used`,
+     * `gate_not_found`, `decryption_failed`, `verify_failed`.
      */
-    onGateOrphaned?: GateLifecycleHook;
+    onGateOrphaned?: (event: GateOrphanedEvent) => void | Promise<void>;
     /**
      * Called after a gate is approved, verified, decrypted, and the wrapped
      * function has been executed. Fired by reconcile() when a previously
@@ -132,11 +179,25 @@ export interface MeshgateConfig {
   };
 
   /**
-   * Emit structured debug logs to `console.log`.
+   * Reconnect delay schedule (ms) for the SSE client.
+   * After all delays are exhausted, the SDK falls back to polling.
+   * Pass `[0, 0, 0]` in tests for instant reconnect behaviour.
+   * @default [0, 1000, 2000]
+   */
+  sseReconnectDelays?: number[];
+
+  /**
+   * Minimum severity of internal SDK log messages emitted to `console`.
    * Logs only structural metadata (intent name, approvalId, event type).
    * NEVER logs args, payloadHash, gateNonce, iv, ciphertext, apiKey, or
    * localEncryptionKey.
-   * @default false
+   * @default 'info'
+   */
+  logLevel?: 'debug' | 'info' | 'warn' | 'error';
+
+  /**
+   * @deprecated Use `logLevel: 'debug'` instead.
+   * Kept for backwards compatibility — `debug: true` maps to `logLevel: 'debug'`.
    */
   debug?: boolean;
 }
@@ -210,6 +271,10 @@ export interface GuardOptions<TArgs extends unknown[]> {
 /**
  * Metadata about a gate, passed to lifecycle hooks and included in
  * `ReconcileResult` arrays.
+ *
+ * When passed to `onGateOrphaned`, the optional `reason` and `message` fields
+ * are populated with the machine-readable reason code and human-readable
+ * explanation for why the gate was orphaned.
  */
 export interface GateInfo {
   /** The Meshgate cloud approval ID for this gate. */
@@ -218,6 +283,17 @@ export interface GateInfo {
   intent: string;
   /** ISO-8601 expiry timestamp. */
   expiresAt: string;
+  /**
+   * Machine-readable reason code for why this gate was orphaned.
+   * Only present when this `GateInfo` is passed to `onGateOrphaned`.
+   */
+  reason?: GateOrphanedReason;
+  /**
+   * Human-readable explanation for why this gate was orphaned.
+   * Never contains secrets or sensitive args.
+   * Only present when this `GateInfo` is passed to `onGateOrphaned`.
+   */
+  message?: string;
 }
 
 // ─── reconcile() Result ───────────────────────────────────────────────────────

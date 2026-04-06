@@ -36,6 +36,8 @@ import {
 } from './errors.js';
 import type {
   GateInfo,
+  GateOrphanedEvent,
+  GateOrphanedReason,
   GatePayload,
   GuardOptions,
   MeshgateConfig,
@@ -49,6 +51,8 @@ import {
   encryptGatePayload,
   generateGateNonce,
 } from './utils/crypto.js';
+import { createLogger } from './utils/logger.js';
+import type { Logger } from './utils/logger.js';
 import { SseClient } from './utils/sse-client.js';
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -83,7 +87,9 @@ export class MeshgateClient {
   private readonly sseUrl: string;
   private readonly sseAuthHeader: Record<string, string>;
   private readonly hooks: NonNullable<MeshgateConfig['hooks']>;
-  private readonly debugEnabled: boolean;
+  private readonly logLevel: 'debug' | 'info' | 'warn' | 'error';
+  private readonly logger: Logger;
+  private readonly sseReconnectDelays: number[];
 
   /** intent name → registered handler, populated by guard(). */
   private readonly handlers = new Map<string, RegisteredHandler>();
@@ -101,6 +107,23 @@ export class MeshgateClient {
    */
   private reconcilePromise: Promise<ReconcileResult> | null = null;
 
+  /**
+   * Resolves when the startup reconcile completes (or errors).
+   * guard() awaits this before executing to ensure reconcile-registered
+   * handlers are processed before new live calls proceed.
+   */
+  private readonly _reconcileReady: Promise<void>;
+  private _resolveReconcileReady!: () => void;
+
+  /**
+   * Tracks verify-token calls that are currently in-flight (or were in-flight
+   * when a non-fatal error occurred). Used to distinguish:
+   * - `token_exhausted_on_retry`: this instance had an in-flight call when the
+   *   403 arrived (server burned the token, response was lost, now retrying)
+   * - `token_already_used`: no prior in-flight call — another process burned it
+   */
+  private readonly _pendingVerify = new Set<string>();
+
   // ─── Constructor ─────────────────────────────────────────────────────────────
 
   constructor(config: MeshgateConfig) {
@@ -116,8 +139,16 @@ export class MeshgateClient {
     }
 
     this.masterSecret = config.localEncryptionKey;
-    this.debugEnabled = config.debug ?? false;
+    // debug: true is a deprecated alias for logLevel: 'debug'
+    if (config.debug === true) {
+      console.warn(
+        '[meshgate] Config option `debug: true` is deprecated. Use `logLevel: "debug"` instead.',
+      );
+    }
+    this.logLevel = config.debug ? 'debug' : (config.logLevel ?? 'info');
+    this.logger = createLogger(this.logLevel);
     this.hooks = config.hooks ?? {};
+    this.sseReconnectDelays = config.sseReconnectDelays ?? [0, 1_000, 2_000];
 
     const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
     this.api = new MeshgateApiClient(config.apiKey, baseUrl);
@@ -126,11 +157,20 @@ export class MeshgateClient {
 
     this.adapter = config.storageAdapter ?? new FileSystemAdapter();
 
+    // ── Reconcile-ready gate ─────────────────────────────────────────────────
+    // guard() awaits this before executing on first call, ensuring startup
+    // reconcile completes before new live calls proceed.
+    this._reconcileReady = new Promise<void>((resolve) => {
+      this._resolveReconcileReady = resolve;
+    });
+
     // Fire startup reconcile in background. The first await inside _reconcileOnStartup()
     // (adapter.listKeys()) yields to the event loop, so any synchronous guard()
     // calls made after construction will have registered their handlers before
     // the scan begins.
-    void this._reconcile();
+    void this._reconcile().finally(() => {
+      this._resolveReconcileReady();
+    });
   }
 
   // ─── guard() ─────────────────────────────────────────────────────────────────
@@ -187,6 +227,9 @@ export class MeshgateClient {
     options: GuardOptions<TArgs>,
     args: TArgs,
   ): Promise<TReturn> {
+    // Wait for startup reconcile before proceeding (RID-027)
+    await this._reconcileReady;
+
     // 1. Validate args are JSON-serializable
     validateSerializable(args, options.intent);
 
@@ -260,6 +303,7 @@ export class MeshgateClient {
       iv,
       authTag,
       ciphertext,
+      createdAt: Date.now(),
     };
     await this.adapter.set(approvalId, JSON.stringify(record));
 
@@ -284,8 +328,14 @@ export class MeshgateClient {
         await this.fireHook('onGateRejected', gateInfo);
       } else if (err instanceof MeshgateExpiredError) {
         await this.fireHook('onGateExpired', gateInfo);
-      } else if (err instanceof MeshgateOrphanedError) {
-        await this.fireHook('onGateOrphaned', gateInfo);
+      } else if (!(err instanceof MeshgateOrphanedError)) {
+        // MeshgateOrphanedError: hook already fired inside _verifyDecryptAndExecute —
+        // skip to avoid double-firing onGateOrphaned for the same gate.
+        await this.fireOrphanedHook({
+          ...gateInfo,
+          reason: 'verify_failed',
+          message: err instanceof Error ? err.message : String(err),
+        });
       }
       throw err;
     }
@@ -308,22 +358,46 @@ export class MeshgateClient {
     token: string,
     fn: (...args: TArgs) => Promise<TReturn>,
   ): Promise<TReturn> {
+    // Track this verify-token call for token_exhausted_on_retry detection (RID-015 to RID-019).
+    // wasAlreadyPending = true means this SDK instance had a prior in-flight call for the
+    // same approvalId that ended without a success (e.g. response was lost on the network).
+    const wasAlreadyPending = this._pendingVerify.has(record.approvalId);
+    this._pendingVerify.add(record.approvalId);
+
     // Phone-home: atomic token burn
     let verifyRes;
     try {
       verifyRes = await this.api.verifyToken({ approvalId: record.approvalId, token });
+      this._pendingVerify.delete(record.approvalId);
     } catch (err) {
-      await this.adapter.delete(record.approvalId);
       if (err instanceof MeshgateOrphanedError) {
-        await this.fireHook('onGateOrphaned', gateInfo);
+        // Terminal — clean up tracking and determine precise reason
+        this._pendingVerify.delete(record.approvalId);
+        await this.adapter.delete(record.approvalId);
+        const reason: GateOrphanedReason =
+          err.reason === 'token_exhausted'
+            ? wasAlreadyPending
+              ? 'token_exhausted_on_retry'
+              : 'token_already_used'
+            : 'gate_not_found';
+        await this.fireOrphanedHook({ ...gateInfo, reason, message: err.message });
+      } else {
+        // Network/timeout errors: keep in _pendingVerify so a retry of the same
+        // approvalId within this process is correctly identified as a potential retry.
+        await this.adapter.delete(record.approvalId);
       }
       throw err;
     }
 
     const resolvedNonce = verifyRes.context.gateNonce;
     if (!resolvedNonce) {
+      this._pendingVerify.delete(record.approvalId);
       await this.adapter.delete(record.approvalId);
-      await this.fireHook('onGateOrphaned', gateInfo);
+      await this.fireOrphanedHook({
+        ...gateInfo,
+        reason: 'verify_failed',
+        message: 'verify-token response is missing gateNonce',
+      });
       throw new MeshgateOrphanedError(
         'verify-token response is missing gateNonce',
         gateInfo.intent,
@@ -381,6 +455,16 @@ export class MeshgateClient {
 
     const keys = await this.adapter.listKeys();
 
+    // ── Phase 1: load records, check local expiry, fetch cloud status ─────────
+    // Collect approved and pending gates for ordered processing in phase 2/3.
+    type GateData = {
+      record: StoredGateRecord;
+      gateInfo: GateInfo;
+      status: ApprovalStatusResponse;
+    };
+    const approvedGates: GateData[] = [];
+    const pendingGates: GateData[] = [];
+
     for (const approvalId of keys) {
       const raw = await this.adapter.get(approvalId);
       if (!raw) continue;
@@ -430,27 +514,16 @@ export class MeshgateClient {
       } catch {
         // 404 / auth failure → treat as orphaned
         await this.adapter.delete(approvalId);
-        await this.fireHook('onGateOrphaned', gateInfo);
+        await this.fireOrphanedHook({
+          ...gateInfo,
+          reason: 'gate_not_found',
+          message: 'Approval record not found in cloud',
+        });
         result.orphaned.push(gateInfo);
         continue;
       }
 
-      if (status.status === 'approved') {
-        if (!status.token) {
-          // Token already burned — another process consumed it
-          await this.adapter.delete(approvalId);
-          await this.fireHook('onGateOrphaned', gateInfo);
-          result.orphaned.push(gateInfo);
-          continue;
-        }
-
-        const resumed = await this._reconcileApproved(record, gateInfo, status.token);
-        if (resumed) {
-          result.resumed.push(gateInfo);
-        } else {
-          result.orphaned.push(gateInfo);
-        }
-      } else if (status.status === 'rejected') {
+      if (status.status === 'rejected') {
         await this.adapter.delete(approvalId);
         await this.fireHook('onGateRejected', gateInfo);
         result.rejected.push(gateInfo);
@@ -458,20 +531,60 @@ export class MeshgateClient {
         await this.adapter.delete(approvalId);
         await this.fireHook('onGateExpired', gateInfo);
         result.expired.push(gateInfo);
+      } else if (status.status === 'approved') {
+        if (!status.token) {
+          // Token already burned by another process
+          await this.adapter.delete(approvalId);
+          await this.fireOrphanedHook({
+            ...gateInfo,
+            reason: 'token_already_used',
+            message: 'Token already consumed by another process',
+          });
+          result.orphaned.push(gateInfo);
+        } else {
+          approvedGates.push({ record, gateInfo, status });
+        }
       } else {
-        // status === 'pending' — re-subscribe SSE for this gate
-        this.ensureSseStarted();
-        this.pendingGates.set(approvalId, {
-          gateInfo,
-          onApproved: (tok) => {
-            void this._reconcileApproved(record, gateInfo, tok);
-          },
-          onTerminated: (err) => {
-            void this._reconcileTerminated(gateInfo, err);
-          },
-        });
-        result.pending.push(gateInfo);
+        // status === 'pending' — collect for re-subscription after sorting
+        pendingGates.push({ record, gateInfo, status });
       }
+    }
+
+    // ── Phase 2: sort approved by resolvedAt desc (most recently approved first) ──
+    // This ensures the freshest approvals execute first, reducing time-to-execution
+    // for recently approved gates after a cold resume (RID-026).
+    approvedGates.sort((a, b) => {
+      const ta = a.status.resolvedAt ? new Date(a.status.resolvedAt).getTime() : 0;
+      const tb = b.status.resolvedAt ? new Date(b.status.resolvedAt).getTime() : 0;
+      return tb - ta;
+    });
+
+    // ── Phase 3: sort pending by createdAt asc (oldest first — FIFO) (RID-026) ──
+    pendingGates.sort((a, b) => (a.record.createdAt ?? 0) - (b.record.createdAt ?? 0));
+
+    // ── Phase 4: process approved gates in sorted order ───────────────────────
+    for (const { record, gateInfo, status } of approvedGates) {
+      const resumed = await this._reconcileApproved(record, gateInfo, status.token!);
+      if (resumed) {
+        result.resumed.push(gateInfo);
+      } else {
+        result.orphaned.push(gateInfo);
+      }
+    }
+
+    // ── Phase 5: re-subscribe SSE for pending gates in sorted order ───────────
+    for (const { record, gateInfo } of pendingGates) {
+      this.ensureSseStarted();
+      this.pendingGates.set(gateInfo.approvalId, {
+        gateInfo,
+        onApproved: (tok) => {
+          void this._reconcileApproved(record, gateInfo, tok);
+        },
+        onTerminated: (err) => {
+          void this._reconcileTerminated(gateInfo, err);
+        },
+      });
+      result.pending.push(gateInfo);
     }
 
     return result;
@@ -491,7 +604,11 @@ export class MeshgateClient {
       // Intent handler not registered — renamed or removed between deploys
       await this.adapter.delete(record.approvalId);
       this.pendingGates.delete(record.approvalId);
-      await this.fireHook('onGateOrphaned', gateInfo);
+      await this.fireOrphanedHook({
+        ...gateInfo,
+        reason: 'gate_not_found',
+        message: `No handler registered for intent "${record.intent}" — was it renamed or removed?`,
+      });
       return false;
     }
 
@@ -508,9 +625,21 @@ export class MeshgateClient {
           }
         },
       );
-    } catch {
+    } catch (err) {
       this.pendingGates.delete(record.approvalId);
-      // Crypto/network errors (tamper, orphaned, etc.) were handled inside _verifyDecryptAndExecute
+      if (err instanceof MeshgateTamperError) {
+        // In the reconcile path, AES-GCM auth failure most likely indicates key rotation
+        // (MESHGATE_LOCAL_SECRET changed since this gate was created). Fire decryption_failed
+        // rather than propagating the tamper error — the gate record was already deleted
+        // inside _verifyDecryptAndExecute. (RID-020, RID-021)
+        await this.fireOrphanedHook({
+          ...gateInfo,
+          reason: 'decryption_failed',
+          message:
+            'Local encryption key may have been rotated. Existing gates cannot be decrypted.',
+        });
+      }
+      // MeshgateOrphanedError: hook already fired inside _verifyDecryptAndExecute
       return false;
     }
 
@@ -531,7 +660,11 @@ export class MeshgateClient {
     } else if (err instanceof MeshgateExpiredError) {
       await this.fireHook('onGateExpired', gateInfo);
     } else {
-      await this.fireHook('onGateOrphaned', gateInfo);
+      await this.fireOrphanedHook({
+        ...gateInfo,
+        reason: 'verify_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -544,6 +677,7 @@ export class MeshgateClient {
       onEvent: (event) => this.handleSseEvent(event),
       onPollFallback: () => this.handleSseFallback(),
       onError: (err) => this.log('sse:error', { error: String(err) }),
+      reconnectDelays: this.sseReconnectDelays,
     });
     this.sseClient.start();
     this.log('sse:started', {});
@@ -662,7 +796,7 @@ export class MeshgateClient {
   // ─── Private: hooks ───────────────────────────────────────────────────────────
 
   private async fireHook(
-    name: keyof NonNullable<MeshgateConfig['hooks']>,
+    name: Exclude<keyof NonNullable<MeshgateConfig['hooks']>, 'onGateOrphaned'>,
     gateInfo: GateInfo,
   ): Promise<void> {
     const hook = this.hooks[name];
@@ -671,12 +805,19 @@ export class MeshgateClient {
     }
   }
 
+  private async fireOrphanedHook(event: GateOrphanedEvent): Promise<void> {
+    const hook = this.hooks.onGateOrphaned;
+    if (hook) {
+      await hook(event);
+    }
+  }
+
   // ─── Private: debug logging ───────────────────────────────────────────────────
 
   private log(event: string, meta: Record<string, unknown>): void {
-    if (!this.debugEnabled) return;
+    // All internal SDK log entries are debug-level structural metadata.
     // SECURITY: never log args, keys, hashes, iv, ciphertext, apiKey, or masterSecret
-    console.log('[meshgate]', event, meta);
+    this.logger.debug(event, meta);
   }
 }
 
