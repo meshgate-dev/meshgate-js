@@ -155,11 +155,11 @@ export class MeshgateApiClient {
           throw new MeshgateBlockedError(`Intent blocked by policy`);
         }
         if (error === 'token_exhausted') {
-          throw new MeshgateOrphanedError(`Token already consumed`);
+          throw new MeshgateOrphanedError(`Token already consumed`, undefined, undefined, 'token_exhausted');
         }
         throw new MeshgateAuthError(`Forbidden: ${error || res.statusText}`);
       case 404:
-        throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`);
+        throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`, undefined, undefined, 'not_found');
       case 422:
         throw new MeshgateConfigError(`Unprocessable entity: ${error || res.statusText}`);
       case 429: {

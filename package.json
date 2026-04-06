@@ -62,6 +62,7 @@
     "@changesets/cli": "^2.27.10",
     "@eslint/js": "^9.18.0",
     "@types/node": "^22.10.7",
+    "@types/proper-lockfile": "^4.1.4",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
     "@typescript-eslint/parser": "^8.20.0",
     "eslint": "^9.18.0",
@@ -86,5 +87,8 @@
     "*.{js,json,md,yml,yaml}": [
       "prettier --write"
     ]
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
   }
 }

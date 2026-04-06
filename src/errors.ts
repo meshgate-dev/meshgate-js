@@ -81,7 +81,20 @@ export class MeshgateExpiredError extends MeshgateError {}
  *
  * HTTP trigger: POST /v1/verify-token → 403 `token_exhausted` or 404
  */
-export class MeshgateOrphanedError extends MeshgateError {}
+export class MeshgateOrphanedError extends MeshgateError {
+  /** Machine-readable subcode indicating why the gate was orphaned. */
+  readonly reason?: 'token_exhausted' | 'not_found';
+
+  constructor(
+    message: string,
+    intent?: string,
+    approvalId?: string,
+    reason?: 'token_exhausted' | 'not_found',
+  ) {
+    super(message, intent, approvalId);
+    this.reason = reason;
+  }
+}
 
 /**
  * Thrown when cryptographic tamper detection fires — either the AES-256-GCM

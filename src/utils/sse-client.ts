@@ -32,10 +32,17 @@ export interface SseClientOptions {
   onPollFallback: () => void;
   /** Optional: called when a connection or reconnect error occurs (for logging). */
   onError?: (err: unknown) => void;
+  /**
+   * Reconnect delay schedule (ms). After all delays are exhausted the client
+   * calls `onPollFallback` and stops reconnecting.
+   * Pass `[0, 0, 0]` in tests for instant reconnect behaviour.
+   * @default [0, 1_000, 2_000]
+   */
+  reconnectDelays?: number[];
 }
 
-/** Reconnect delay schedule (ms). After all delays exhausted → poll fallback. */
-const RECONNECT_DELAYS_MS = [0, 1_000, 2_000];
+/** Default reconnect delay schedule (ms). After all delays exhausted → poll fallback. */
+const DEFAULT_RECONNECT_DELAYS_MS = [0, 1_000, 2_000];
 
 export class SseClient {
   private readonly url: string;
@@ -66,8 +73,9 @@ export class SseClient {
   // ─── Internal ─────────────────────────────────────────────────────────────
 
   private async connectLoop(): Promise<void> {
-    // +1 because RECONNECT_DELAYS_MS[i] is the delay *before* attempt i+1
-    const maxAttempts = RECONNECT_DELAYS_MS.length + 1;
+    const delays = this.opts.reconnectDelays ?? DEFAULT_RECONNECT_DELAYS_MS;
+    // +1 because delays[i] is the delay *before* attempt i+1
+    const maxAttempts = delays.length + 1;
     let consecutiveFailures = 0;
 
     while (!this.stopped) {
@@ -78,8 +86,8 @@ export class SseClient {
 
       // Wait before reconnecting (0ms on first attempt)
       const delayIndex = consecutiveFailures - 1;
-      if (delayIndex >= 0 && delayIndex < RECONNECT_DELAYS_MS.length) {
-        const delay = RECONNECT_DELAYS_MS[delayIndex] ?? 0;
+      if (delayIndex >= 0 && delayIndex < delays.length) {
+        const delay = delays[delayIndex] ?? 0;
         if (delay > 0) await sleep(delay);
       }
 
