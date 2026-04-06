@@ -746,7 +746,7 @@ Developer calls: await gatedRefund('cust_123', 750)
 POST /v1/intent {
   intent: "process_refund",
   intentArgs: { amount: 750 },
-  payloadHash: "7a38bf...",
+  payloadHash: "ejv7gf...",
   gateNonce: "dGVzd...",
   expiresInSeconds: 86400
 }
