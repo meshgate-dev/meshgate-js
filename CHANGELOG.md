@@ -1,5 +1,11 @@
 # @meshgate/sdk
 
+## 0.2.0
+
+### Minor Changes
+
+- a1f7348: v2.3 SDK Polish: pending verify tracking (token_exhausted_on_retry), decryption failure handling in reconcile, FileSystemAdapter file locking, configurable sseReconnectDelays, structured logger with logLevel, reconcile ordering, guard awaits reconcile ready.
+
 ## 0.1.0
 
 ### Minor Changes
