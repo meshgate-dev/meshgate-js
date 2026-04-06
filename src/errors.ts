@@ -85,6 +85,18 @@ export class MeshgateOrphanedError extends MeshgateError {
   /** Machine-readable subcode indicating why the gate was orphaned. */
   readonly reason?: 'token_exhausted' | 'not_found';
 
+  /**
+   * @param message - Human-readable error message. Must not contain secrets.
+   * @param intent - The intent name associated with the orphaned gate, if available.
+   * @param approvalId - The Meshgate approval ID for the orphaned gate, if available.
+   * @param reason - Machine-readable subcode for why this gate was orphaned:
+   *   - `'token_exhausted'`: The one-time verify token was already consumed —
+   *     either by another process or by a prior call in this process whose
+   *     response was lost on the network. The SDK uses this to distinguish
+   *     `token_exhausted_on_retry` vs `token_already_used` in `GateOrphanedReason`.
+   *   - `'not_found'`: The approval record does not exist in the cloud (HTTP 404).
+   *     This typically means the gate was already cleaned up or never registered.
+   */
   constructor(
     message: string,
     intent?: string,

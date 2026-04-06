@@ -39,6 +39,18 @@ var MeshgateExpiredError = class extends MeshgateError {
 var MeshgateOrphanedError = class extends MeshgateError {
   /** Machine-readable subcode indicating why the gate was orphaned. */
   reason;
+  /**
+   * @param message - Human-readable error message. Must not contain secrets.
+   * @param intent - The intent name associated with the orphaned gate, if available.
+   * @param approvalId - The Meshgate approval ID for the orphaned gate, if available.
+   * @param reason - Machine-readable subcode for why this gate was orphaned:
+   *   - `'token_exhausted'`: The one-time verify token was already consumed —
+   *     either by another process or by a prior call in this process whose
+   *     response was lost on the network. The SDK uses this to distinguish
+   *     `token_exhausted_on_retry` vs `token_already_used` in `GateOrphanedReason`.
+   *   - `'not_found'`: The approval record does not exist in the cloud (HTTP 404).
+   *     This typically means the gate was already cleaned up or never registered.
+   */
   constructor(message, intent, approvalId, reason) {
     super(message, intent, approvalId);
     this.reason = reason;
@@ -110,20 +122,25 @@ var FileSystemAdapter = class {
     let release;
     try {
       release = await lockfile.lock(file, { stale: 5e3, retries: { retries: 3, minTimeout: 50, maxTimeout: 500 } });
-      await fs.unlink(file);
+      try {
+        await fs.unlink(file);
+      } catch (unlinkErr) {
+        if (unlinkErr.code === "ENOENT") return;
+        throw new MeshgateError(`Failed to delete gate record: ${String(unlinkErr)}`);
+      }
     } catch (err) {
       const code = err.code;
       if (code === "ENOENT") return;
       if (code === "ELOCKED") {
         try {
-          await fs.access(file);
+          await fs.unlink(file);
+        } catch (unlinkErr) {
+          if (unlinkErr.code === "ENOENT") return;
           throw new MeshgateError(`Failed to delete gate record: could not acquire lock after retries`);
-        } catch (accessErr) {
-          if (accessErr.code === "ENOENT") return;
-          throw new MeshgateError(`Failed to delete gate record: ${String(err)}`);
         }
+        return;
       }
-      throw new MeshgateError(`Failed to delete gate record: ${String(err)}`);
+      throw err instanceof MeshgateError ? err : new MeshgateError(`Failed to delete gate record: ${String(err)}`);
     } finally {
       if (release) await release();
     }
@@ -398,7 +415,9 @@ function createLogger(level) {
   const minLevel = LOG_LEVEL_ORDER[level];
   function emit(msgLevel, event, meta = {}) {
     if (LOG_LEVEL_ORDER[msgLevel] < minLevel) return;
-    if (msgLevel === "warn") {
+    if (msgLevel === "debug") {
+      console.debug("[meshgate]", event, meta);
+    } else if (msgLevel === "warn") {
       console.warn("[meshgate]", event, meta);
     } else if (msgLevel === "error") {
       console.error("[meshgate]", event, meta);
@@ -583,6 +602,11 @@ var MeshgateClient = class {
       );
     }
     this.masterSecret = config.localEncryptionKey;
+    if (config.debug === true) {
+      console.warn(
+        '[meshgate] Config option `debug: true` is deprecated. Use `logLevel: "debug"` instead.'
+      );
+    }
     this.logLevel = config.debug ? "debug" : config.logLevel ?? "info";
     this.logger = createLogger(this.logLevel);
     this.hooks = config.hooks ?? {};
@@ -711,7 +735,7 @@ var MeshgateClient = class {
         await this.fireHook("onGateRejected", gateInfo);
       } else if (err instanceof MeshgateExpiredError) {
         await this.fireHook("onGateExpired", gateInfo);
-      } else {
+      } else if (!(err instanceof MeshgateOrphanedError)) {
         await this.fireOrphanedHook({
           ...gateInfo,
           reason: "verify_failed",

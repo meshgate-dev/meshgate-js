@@ -35,6 +35,8 @@ export type {
   GuardOptions,
   GateInfo,
   GateLifecycleHook,
+  GateOrphanedEvent,
+  GateOrphanedReason,
 } from './types.js';
 
 // ─── Error Classes ───────────────────────────────────────────────────────────

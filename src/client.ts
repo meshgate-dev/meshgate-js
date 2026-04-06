@@ -140,6 +140,11 @@ export class MeshgateClient {
 
     this.masterSecret = config.localEncryptionKey;
     // debug: true is a deprecated alias for logLevel: 'debug'
+    if (config.debug === true) {
+      console.warn(
+        '[meshgate] Config option `debug: true` is deprecated. Use `logLevel: "debug"` instead.',
+      );
+    }
     this.logLevel = config.debug ? 'debug' : (config.logLevel ?? 'info');
     this.logger = createLogger(this.logLevel);
     this.hooks = config.hooks ?? {};
@@ -323,7 +328,9 @@ export class MeshgateClient {
         await this.fireHook('onGateRejected', gateInfo);
       } else if (err instanceof MeshgateExpiredError) {
         await this.fireHook('onGateExpired', gateInfo);
-      } else {
+      } else if (!(err instanceof MeshgateOrphanedError)) {
+        // MeshgateOrphanedError: hook already fired inside _verifyDecryptAndExecute —
+        // skip to avoid double-firing onGateOrphaned for the same gate.
         await this.fireOrphanedHook({
           ...gateInfo,
           reason: 'verify_failed',

@@ -94,14 +94,14 @@ export type GateOrphanedReason =
 
 /**
  * Event passed to the `onGateOrphaned` lifecycle hook.
- * Extends `GateInfo` with a machine-readable `reason` and human-readable `message`.
+ *
+ * This is a type alias for `GateInfo` — the `reason` and `message` fields
+ * defined on `GateInfo` are always populated when a gate info object is passed
+ * to `onGateOrphaned`. Using a type alias (rather than a separate interface)
+ * preserves backward compatibility: existing consumers that access `.approvalId`,
+ * `.intent`, or `.expiresAt` continue to work without any changes.
  */
-export interface GateOrphanedEvent extends GateInfo {
-  /** Machine-readable reason code for why this gate was orphaned. */
-  reason: GateOrphanedReason;
-  /** Human-readable explanation. Never contains secrets or sensitive args. */
-  message: string;
-}
+export type GateOrphanedEvent = GateInfo;
 
 /**
  * Configuration for `MeshgateClient`.
@@ -160,8 +160,11 @@ export interface MeshgateConfig {
     /** Called when a human rejects an approval. */
     onGateRejected?: GateLifecycleHook;
     /**
-     * Called when a gate is orphaned. Receives a `GateOrphanedEvent` with a
-     * machine-readable `reason` code and human-readable `message`.
+     * Called when a gate is orphaned. Receives a `GateInfo` (aliased as
+     * `GateOrphanedEvent`) with the `reason` and `message` fields populated.
+     *
+     * Because `GateOrphanedEvent` is a type alias for `GateInfo`, existing
+     * callbacks that accept `GateInfo` continue to work without modification.
      *
      * Reasons: `token_exhausted_on_retry`, `token_already_used`,
      * `gate_not_found`, `decryption_failed`, `verify_failed`.
@@ -268,6 +271,10 @@ export interface GuardOptions<TArgs extends unknown[]> {
 /**
  * Metadata about a gate, passed to lifecycle hooks and included in
  * `ReconcileResult` arrays.
+ *
+ * When passed to `onGateOrphaned`, the optional `reason` and `message` fields
+ * are populated with the machine-readable reason code and human-readable
+ * explanation for why the gate was orphaned.
  */
 export interface GateInfo {
   /** The Meshgate cloud approval ID for this gate. */
@@ -276,6 +283,17 @@ export interface GateInfo {
   intent: string;
   /** ISO-8601 expiry timestamp. */
   expiresAt: string;
+  /**
+   * Machine-readable reason code for why this gate was orphaned.
+   * Only present when this `GateInfo` is passed to `onGateOrphaned`.
+   */
+  reason?: GateOrphanedReason;
+  /**
+   * Human-readable explanation for why this gate was orphaned.
+   * Never contains secrets or sensitive args.
+   * Only present when this `GateInfo` is passed to `onGateOrphaned`.
+   */
+  message?: string;
 }
 
 // ─── reconcile() Result ───────────────────────────────────────────────────────

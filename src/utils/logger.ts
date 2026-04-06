@@ -20,7 +20,9 @@ export function createLogger(level: LogLevel): Logger {
 
   function emit(msgLevel: LogLevel, event: string, meta: Record<string, unknown> = {}): void {
     if (LOG_LEVEL_ORDER[msgLevel] < minLevel) return;
-    if (msgLevel === 'warn') {
+    if (msgLevel === 'debug') {
+      console.debug('[meshgate]', event, meta);
+    } else if (msgLevel === 'warn') {
       console.warn('[meshgate]', event, meta);
     } else if (msgLevel === 'error') {
       console.error('[meshgate]', event, meta);
