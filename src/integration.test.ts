@@ -23,14 +23,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NoopAdapter } from './adapters/noop-adapter.js';
 import type { MeshgateStorageAdapter } from './adapters/types.js';
 import { MeshgateClient } from './client.js';
-import type { GatePayload } from './types.js';
+import type { GatePayload, ReconcileResult, StoredGateRecord } from './types.js';
 import { deriveGateKey, encryptGatePayload, generateGateNonce } from './utils/crypto.js';
 import {
   MeshgateExpiredError,
   MeshgateOrphanedError,
   MeshgateRejectedError,
 } from './errors.js';
-import type { StoredGateRecord } from './types.js';
+
+// Test-only helper: access the private _reconcile() method.
+function reconcile(client: MeshgateClient): Promise<ReconcileResult> {
+  return (client as unknown as { _reconcile(): Promise<ReconcileResult> })._reconcile();
+}
 
 // ─── Test constants ───────────────────────────────────────────────────────────
 
@@ -492,7 +496,7 @@ describe('Integration — cold resume (reconcile after restart)', () => {
     const fnB = vi.fn().mockResolvedValue('B done');
     clientB.guard(fnB, { intent: 'cold_resume' });
 
-    const result = await clientB.reconcile();
+    const result = await reconcile(clientB);
     expect(result.resumed).toHaveLength(1);
     expect(result.resumed[0]?.approvalId).toBe(approvalId);
     expect(fnB).toHaveBeenCalledOnce();
@@ -553,7 +557,7 @@ describe('Integration — cold resume (reconcile after restart)', () => {
     };
 
     const client = makeClient({ storageAdapter: adapter });
-    const result = await client.reconcile();
+    const result = await reconcile(client);
 
     expect(result.expired).toHaveLength(1);
     expect(result.expired[0]?.approvalId).toBe(expiredId);
@@ -714,9 +718,9 @@ describe('Integration — auto-reconcile constructor (MG22-018)', () => {
     // Create the client — constructor fires reconcile() in background
     const client = makeClient({ storageAdapter: adapter, hooks: { onGateExpired } });
 
-    // Do NOT call client.reconcile() — but join the background promise by calling
-    // reconcile(), which returns the same deduplication promise.
-    const result = await client.reconcile();
+    // Do NOT call _reconcile() directly in production — but join the background
+    // promise via the test helper, which returns the same deduplication promise.
+    const result = await reconcile(client);
 
     expect(result.expired).toHaveLength(1);
     expect(onGateExpired).toHaveBeenCalledOnce();
@@ -738,7 +742,7 @@ describe('Integration — auto-reconcile constructor (MG22-018)', () => {
     const client = makeClient({ storageAdapter: adapter });
 
     // Both calls during construction window join the in-flight promise
-    const [r1, r2] = await Promise.all([client.reconcile(), client.reconcile()]);
+    const [r1, r2] = await Promise.all([reconcile(client), reconcile(client)]);
     expect(r1).toEqual(r2);
     // listKeys should be called at most twice: once for constructor + once for
     // any second reconcile after the first completes. The key invariant is that
@@ -759,9 +763,9 @@ describe('Integration — auto-reconcile constructor (MG22-018)', () => {
     };
 
     const client = makeClient({ storageAdapter: adapter });
-    await client.reconcile(); // first run (may merge with constructor's)
+    await reconcile(client); // first run (may merge with constructor's)
     const prevCount = listCallCount;
-    await client.reconcile(); // second explicit call — must run a new scan
+    await reconcile(client); // second explicit call — must run a new scan
     expect(listCallCount).toBeGreaterThan(prevCount);
   });
 
