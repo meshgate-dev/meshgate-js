@@ -137,3 +137,9 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Meshgate local gate state (contains encrypted pending gates — do not commit)
+.meshgate/
+
+# Build output
+dist/
