@@ -295,7 +295,9 @@ export class MeshgateClient {
     }
 
     // Phone-home verify-token (mandatory — fn() is NEVER called without this)
-    return this._verifyDecryptAndExecute(record, gateInfo, token, fn);
+    const result = await this._verifyDecryptAndExecute(record, gateInfo, token, fn);
+    await this.fireHook('onGateApproved', gateInfo);
+    return result;
   }
 
   /**
@@ -396,6 +398,20 @@ export class MeshgateClient {
         continue;
       }
 
+      // Validate required fields and schemaVersion
+      if (
+        record.schemaVersion !== '1' ||
+        !record.approvalId ||
+        !record.intent ||
+        !record.expiresAt ||
+        !record.iv ||
+        !record.authTag ||
+        !record.ciphertext
+      ) {
+        await this.adapter.delete(approvalId);
+        continue;
+      }
+
       const gateInfo: GateInfo = {
         approvalId: record.approvalId,
         intent: record.intent,
@@ -403,7 +419,8 @@ export class MeshgateClient {
       };
 
       // ── Local expiry check (no network call) ──────────────────────────────
-      if (new Date(record.expiresAt) < new Date()) {
+      const expiryDate = new Date(record.expiresAt);
+      if (isNaN(expiryDate.getTime()) || expiryDate < new Date()) {
         await this.adapter.delete(approvalId);
         await this.fireHook('onGateExpired', gateInfo);
         result.expired.push(gateInfo);
@@ -473,48 +490,6 @@ export class MeshgateClient {
     gateInfo: GateInfo,
     token: string,
   ): Promise<boolean> {
-    let verifyRes;
-    try {
-      verifyRes = await this.api.verifyToken({ approvalId: record.approvalId, token });
-    } catch {
-      await this.adapter.delete(record.approvalId);
-      this.pendingGates.delete(record.approvalId);
-      await this.fireHook('onGateOrphaned', gateInfo);
-      return false;
-    }
-
-    const resolvedNonce = verifyRes.context.gateNonce;
-    if (!resolvedNonce) {
-      await this.adapter.delete(record.approvalId);
-      this.pendingGates.delete(record.approvalId);
-      await this.fireHook('onGateOrphaned', gateInfo);
-      return false;
-    }
-
-    const key = await deriveGateKey(this.masterSecret, resolvedNonce);
-
-    let payload: GatePayload;
-    try {
-      payload = await decryptGatePayload(key, record.iv, record.authTag, record.ciphertext);
-    } catch {
-      await this.adapter.delete(record.approvalId);
-      this.pendingGates.delete(record.approvalId);
-      await this.fireHook('onGateOrphaned', gateInfo);
-      return false;
-    }
-
-    // payloadHash verification
-    const cloudHash = verifyRes.context.payloadHash;
-    if (cloudHash) {
-      const recomputed = await computePayloadHash(payload.args);
-      if (recomputed !== cloudHash) {
-        await this.adapter.delete(record.approvalId);
-        this.pendingGates.delete(record.approvalId);
-        await this.fireHook('onGateOrphaned', gateInfo);
-        return false;
-      }
-    }
-
     const handler = this.handlers.get(record.intent);
     if (!handler) {
       // Intent handler not registered — renamed or removed between deploys
@@ -524,16 +499,27 @@ export class MeshgateClient {
       return false;
     }
 
-    await this.adapter.delete(record.approvalId);
-    this.pendingGates.delete(record.approvalId);
-    this.cleanupAfterGate();
-
     try {
-      await handler.fn(...payload.args);
+      await this._verifyDecryptAndExecute(
+        record,
+        gateInfo,
+        token,
+        async (...args: unknown[]) => {
+          try {
+            await handler.fn(...args);
+          } catch {
+            // Handler errors don't fail reconcile — the gate was successfully resumed
+          }
+        },
+      );
     } catch {
-      // Handler errors don't fail reconcile — the gate was successfully resumed
+      this.pendingGates.delete(record.approvalId);
+      // Crypto/network errors (tamper, orphaned, etc.) were handled inside _verifyDecryptAndExecute
+      return false;
     }
 
+    this.pendingGates.delete(record.approvalId);
+    this.cleanupAfterGate();
     await this.fireHook('onGateApproved', gateInfo);
     return true;
   }
@@ -577,6 +563,11 @@ export class MeshgateClient {
     if (event.type === 'approval.approved') {
       const payload = event.payload as Record<string, unknown> | null;
       const token = typeof payload?.['token'] === 'string' ? payload['token'] : '';
+      if (!token) {
+        this.log('sse:empty-token', { approvalId });
+        // Leave gate in pendingGates so polling fallback or next SSE event can retry
+        return;
+      }
       this.pendingGates.delete(approvalId);
       this.cleanupAfterGate();
       entry.onApproved(token);

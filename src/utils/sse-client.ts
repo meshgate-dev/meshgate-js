@@ -86,8 +86,13 @@ export class SseClient {
       if (this.stopped) return;
 
       try {
-        await this.connect();
-        // If connect() returns cleanly the stream ended — treat as a failure
+        const readAtLeastOneChunk = await this.connect();
+        // If connect() returns cleanly the stream ended — treat as a failure.
+        // But if we successfully read data, reset the failure counter so transient
+        // disconnects don't count against the reconnect budget.
+        if (readAtLeastOneChunk) {
+          consecutiveFailures = 0;
+        }
         consecutiveFailures++;
       } catch (err) {
         this.opts.onError?.(err);
@@ -96,7 +101,7 @@ export class SseClient {
     }
   }
 
-  private async connect(): Promise<void> {
+  private async connect(): Promise<boolean> {
     this.abortController = new AbortController();
 
     const res = await fetch(this.url, {
@@ -113,11 +118,13 @@ export class SseClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let currentEvent: Partial<SseEvent> & { data?: string } = {};
+    let readAtLeastOneChunk = false;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        readAtLeastOneChunk = true;
         const chunk = decoder.decode(value, { stream: true });
 
         buffer += chunk;
@@ -133,7 +140,10 @@ export class SseClient {
           } else if (line.startsWith('event:')) {
             currentEvent.type = line.slice(6).trim();
           } else if (line.startsWith('data:')) {
-            currentEvent.data = line.slice(5).trim();
+            // Per SSE spec, multiple data: lines are joined with \n
+            const chunk = line.slice(5).trim();
+            currentEvent.data =
+              currentEvent.data !== undefined ? `${currentEvent.data}\n${chunk}` : chunk;
           }
           // id: and retry: fields are ignored
         }
@@ -141,6 +151,8 @@ export class SseClient {
     } finally {
       reader.releaseLock();
     }
+
+    return readAtLeastOneChunk;
   }
 
   private dispatchEvent(raw: Partial<SseEvent> & { data?: string }): void {

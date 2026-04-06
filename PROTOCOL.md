@@ -10,7 +10,7 @@ This document is the authoritative reference for building a Meshgate SDK in any 
 
 ## Table of Contents
 
-1. [Overview — The Yield/Hydrate Flow](#1-overview--the-yieldhyde-flow)
+1. [Overview — The Yield/Hydrate Flow](#1-overview--the-yieldhydrate-flow)
 2. [Authentication](#2-authentication)
 3. [Base URL and Versioning](#3-base-url-and-versioning)
 4. [POST /v1/intent — Gate Registration](#4-post-v1intent--gate-registration)
@@ -124,7 +124,7 @@ Content-Type: application/json
     "customerId": "cust_123",
     "amount": 750
   },
-  "payloadHash": "7a38bf81f383f69433ad6e900d35b3e2385593f76a7b7ab5d4355b8ba41ee24b",
+  "payloadHash": "ejv7gfOD9pQzrW6QDTWz4jhVk/dqe3q1nUNVuLpB7iU=",
   "gateNonce": "dGVzdG5vbmNlX3ZhbHVlXzMyYnl0ZXNfYmFzZTY0dXJs",
   "expiresInSeconds": 86400,
   "description": "Refund $750 for customer cust_123"
@@ -414,7 +414,7 @@ Content-Type: application/json
     "approvalId": "app_01jdx8wq4dj2k",
     "intent": "process_refund",
     "approvedBy": "alice@example.com",
-    "payloadHash": "7a38bf81f383f69433ad6e900d35b3e2385593f76a7b7ab5d4355b8ba41ee24b",
+    "payloadHash": "ejv7gfOD9pQzrW6QDTWz4jhVk/dqe3q1nUNVuLpB7iU=",
     "gateNonce": "dGVzdG5vbmNlX3ZhbHVlXzMyYnl0ZXNfYmFzZTY0dXJs",
     "resolvedAt": "2026-04-07T09:22:15.000Z"
   }
@@ -438,7 +438,7 @@ After receiving this `200`:
 | `403`  | `token_exhausted`     | Token already burned → fire `onGateOrphaned`, throw `MeshgateOrphanedError` |
 | `403`  | `forbidden`           | Throw `MeshgateAuthError`                                                   |
 | `404`  | —                     | Fire `onGateOrphaned`, delete local state                                   |
-| `5xx`  | —                     | Retryable — 3 attempts with 1s/2s/4s backoff (see §10.3)                    |
+| `5xx`  | —                     | Retryable — 3 attempts with 0s/1s/2s backoff (see §10.3)                    |
 
 ---
 
@@ -672,8 +672,8 @@ KV key: mg:{approvalId}    ← one entry per pending gate
 
 | Condition              | Retryable | Backoff                                      | After exhaustion                            |
 | ---------------------- | --------- | -------------------------------------------- | ------------------------------------------- |
-| `503` response         | Yes       | 1s, 2s, 4s (3 attempts)                      | Throw `MeshgateNetworkError`                |
-| Network timeout (>10s) | Yes       | 1s, 2s, 4s (3 attempts)                      | Throw `MeshgateNetworkError`                |
+| `503` response         | Yes       | 0s, 1s, 2s (3 attempts)                      | Throw `MeshgateNetworkError`                |
+| Network timeout (>10s) | Yes       | 0s, 1s, 2s (3 attempts)                      | Throw `MeshgateNetworkError`                |
 | `429` response         | Yes       | `Retry-After` header (seconds), then 1 retry | Throw `MeshgateNetworkError` if retry fails |
 | `400`                  | No        | —                                            | Throw `MeshgateConfigError`                 |
 | `401`                  | No        | —                                            | Throw `MeshgateAuthError`                   |
@@ -695,7 +695,7 @@ KV key: mg:{approvalId}    ← one entry per pending gate
 
 | Condition             | Retryable | Backoff                 | After exhaustion              |
 | --------------------- | --------- | ----------------------- | ----------------------------- |
-| `5xx`                 | Yes       | 1s, 2s, 4s (3 attempts) | Throw `MeshgateNetworkError`  |
+| `5xx`                 | Yes       | 0s, 1s, 2s (3 attempts) | Throw `MeshgateNetworkError`  |
 | `400`                 | No        | —                       | Throw `MeshgateTamperError`   |
 | `401`                 | No        | —                       | Throw `MeshgateAuthError`     |
 | `403 token_exhausted` | No        | —                       | Throw `MeshgateOrphanedError` |
@@ -734,7 +734,7 @@ Developer calls: await gatedRefund('cust_123', 750)
    → If not flat: throw MeshgateSerializationError
 
 3. Compute payloadHash = base64(SHA-256(JSON.stringify(['cust_123', 750])))
-   → e.g., "7a38bf81f383f69433ad6e900d35b3e2385593f76a7b7ab5d4355b8ba41ee24b"
+   → e.g., "ejv7gfOD9pQzrW6QDTWz4jhVk/dqe3q1nUNVuLpB7iU="
 
 4. Generate gateNonce = base64url(crypto.randomBytes(32))
    → e.g., "dGVzdG5vbmNlX3ZhbHVlXzMyYnl0ZXNfYmFzZTY0dXJs"
@@ -839,7 +839,7 @@ POST /v1/verify-token {
   verified: true,
   context: {
     gateNonce: "dGVzdG5vbmNlX3ZhbHVlXzMyYnl0ZXNfYmFzZTY0dXJs",
-    payloadHash: "7a38bf81f383f69433ad6e900d35b3e2385593f76a7b7ab5d4355b8ba41ee24b",
+    payloadHash: "ejv7gfOD9pQzrW6QDTWz4jhVk/dqe3q1nUNVuLpB7iU=",
     ...
   }
 }

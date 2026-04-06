@@ -68,7 +68,9 @@ export class MeshgateApiClient {
   // ─── POST /v1/verify-token ─────────────────────────────────────────────────
 
   verifyToken(req: VerifyTokenRequest): Promise<VerifyTokenResponse> {
-    return this.post<VerifyTokenResponse>('/v1/verify-token', req, { retryOn503: false });
+    return this.withRetry(() =>
+      this.post<VerifyTokenResponse>('/v1/verify-token', req, { retryOn503: true }),
+    );
   }
 
   // ─── Internals ─────────────────────────────────────────────────────────────
@@ -158,6 +160,13 @@ export class MeshgateApiClient {
         throw new MeshgateAuthError(`Forbidden: ${error || res.statusText}`);
       case 404:
         throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`);
+      case 422:
+        throw new MeshgateConfigError(`Unprocessable entity: ${error || res.statusText}`);
+      case 429: {
+        const retryAfter = Number(res.headers.get('Retry-After') ?? '0');
+        if (retryAfter > 0) await sleep(retryAfter * 1_000);
+        throw new RetryableError(`HTTP 429 rate limit`);
+      }
       case 503:
         throw new MeshgateNetworkError(`Service unavailable (503)`);
       default:

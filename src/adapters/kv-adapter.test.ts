@@ -19,7 +19,7 @@ function createMockKV(): KVNamespaceLike {
       const keys = [...store.keys()]
         .filter((k) => (prefix ? k.startsWith(prefix) : true))
         .map((name) => ({ name }));
-      return Promise.resolve({ keys });
+      return Promise.resolve({ keys, list_complete: true });
     },
   };
 }
