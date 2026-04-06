@@ -80,7 +80,6 @@ out
 
 # Nuxt.js build / generate output
 .nuxt
-dist
 
 # Gatsby files
 .cache/
@@ -141,5 +140,5 @@ vite.config.ts.timestamp-*
 # Meshgate local gate state (contains encrypted pending gates — do not commit)
 .meshgate/
 
-# Build output
-dist/
+# dist/ is intentionally committed so git-installed consumers get pre-built
+# types and CJS/ESM outputs without needing a separate build step.
