@@ -572,7 +572,14 @@ describe('Integration — concurrent guards', () => {
     server.nextIntentOutcome = 'gated';
     vi.spyOn(globalThis, 'fetch').mockImplementation(server.handler);
 
-    const client = makeClient();
+    // Use an explicit adapter so we can observe when each gate is stored.
+    // adapter.set() is called in the same synchronous continuation as
+    // pendingGates.set(), so once we see both writes we know both gates
+    // are registered after one full macrotask cycle.
+    const adapter = new NoopAdapter();
+    const setSpy = vi.spyOn(adapter, 'set');
+
+    const client = makeClient({ storageAdapter: adapter });
     const fn1 = vi.fn().mockResolvedValue('result_1');
     const fn2 = vi.fn().mockResolvedValue('result_2');
     const wrapped1 = client.guard(fn1, { intent: 'concurrent_a' });
@@ -581,14 +588,22 @@ describe('Integration — concurrent guards', () => {
     const p1 = wrapped1('arg_a');
     const p2 = wrapped2('arg_b');
 
-    // Wait for SSE connection to be established (first gate connects it)
+    // Wait for the SSE connection (confirms p1's full chain has run).
     await server.sseConnected();
-    // Flush remaining microtasks so appr_2 is registered in pendingGates
-    // before the SSE events fire (the two intent fetches are concurrent and
-    // appr_2's chain may not have completed when the first SSE fires)
-    await new Promise((r) => setTimeout(r, 0));
 
-    // Approve both gates via the shared SSE stream
+    // p2's chain includes WebCrypto operations (computePayloadHash, deriveGateKey,
+    // encryptGatePayload) that each resolve via the libuv thread pool on Node.js —
+    // i.e. as macrotasks, not microtasks. A single setTimeout(0) is therefore not
+    // sufficient to guarantee appr_2 is in pendingGates on slow CI machines.
+    // Poll until adapter.set() has been called for both gates, then wait one
+    // full macrotask cycle so the synchronous pendingGates.set() continuation
+    // is guaranteed to have run before we fire the SSE approval events.
+    while (setSpy.mock.calls.length < 2) {
+      await new Promise<void>((r) => setTimeout(r, 1));
+    }
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    // Both gates are now registered in pendingGates — safe to fire SSE events
     server.approve('appr_1', 'tok_concurrent_a');
     server.approve('appr_2', 'tok_concurrent_b');
 
