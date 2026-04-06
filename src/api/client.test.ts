@@ -197,13 +197,15 @@ describe('MeshgateApiClient', () => {
       ).rejects.toBeInstanceOf(MeshgateAuthError);
     });
 
-    it('does NOT retry on 503 (non-retryable)', async () => {
-      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeRes(503, {}));
+    it('retries on 503 and throws MeshgateNetworkError after 3 attempts', async () => {
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(makeRes(503, {}));
       await expect(
         client.verifyToken({ approvalId: 'appr_123', token: 'tok_abc' }),
       ).rejects.toBeInstanceOf(MeshgateNetworkError);
-      // Exactly 1 attempt — no retry
-      expect(spy).toHaveBeenCalledTimes(1);
+      // 3 attempts total (same retry policy as registerIntent)
+      expect(spy).toHaveBeenCalledTimes(3);
     });
   });
 });

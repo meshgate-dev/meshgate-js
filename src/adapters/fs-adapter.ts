@@ -12,7 +12,7 @@
  * (i.e., the runtime is not Node.js / Bun).
  */
 
-import { MeshgateConfigError } from '../errors.js';
+import { MeshgateConfigError, MeshgateError } from '../errors.js';
 import type { MeshgateStorageAdapter } from './types.js';
 
 type FsPromises = typeof import('node:fs/promises');
@@ -38,6 +38,11 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
   }
 
   private keyPath(approvalId: string): string {
+    if (approvalId.includes('/') || approvalId.includes('\\') || approvalId.includes('..')) {
+      throw new MeshgateConfigError(
+        `Invalid approvalId "${approvalId}": must not contain /, \\, or ..`,
+      );
+    }
     return `${this.dir}/${approvalId}.json`;
   }
 
@@ -53,7 +58,7 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
       return await fs.readFile(this.keyPath(approvalId), 'utf-8');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw err;
+      throw new MeshgateError(`Failed to read gate record: ${String(err)}`);
     }
   }
 
@@ -63,7 +68,7 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
       await fs.unlink(this.keyPath(approvalId));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw err;
+      throw new MeshgateError(`Failed to delete gate record: ${String(err)}`);
     }
   }
 
@@ -74,7 +79,7 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
       return entries.filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw err;
+      throw new MeshgateError(`Failed to list gate records: ${String(err)}`);
     }
   }
 }

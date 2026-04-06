@@ -28,7 +28,11 @@ export interface KVNamespaceLike {
   put(key: string, value: string): Promise<void>;
   get(key: string): Promise<string | null>;
   delete(key: string): Promise<void>;
-  list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
+  list(options?: { prefix?: string; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    list_complete: boolean;
+    cursor?: string;
+  }>;
 }
 
 const KEY_PREFIX = 'mg:';
@@ -57,7 +61,17 @@ export class CloudflareKVAdapter implements MeshgateStorageAdapter {
   }
 
   async listKeys(): Promise<string[]> {
-    const result = await this.kv.list({ prefix: KEY_PREFIX });
-    return result.keys.map(({ name }) => name.slice(KEY_PREFIX.length));
+    const keys: string[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const result = await this.kv.list({ prefix: KEY_PREFIX, cursor });
+      for (const { name } of result.keys) {
+        keys.push(name.slice(KEY_PREFIX.length));
+      }
+      cursor = result.list_complete ? undefined : result.cursor;
+    } while (cursor !== undefined);
+
+    return keys;
   }
 }
