@@ -123,6 +123,12 @@ export interface MeshgateConfig {
      * process), or when the approval record cannot be found.
      */
     onGateOrphaned?: GateLifecycleHook;
+    /**
+     * Called after a gate is approved, verified, decrypted, and the wrapped
+     * function has been executed. Fired by reconcile() when a previously
+     * pending gate is resumed on startup.
+     */
+    onGateApproved?: GateLifecycleHook;
   };
 
   /**

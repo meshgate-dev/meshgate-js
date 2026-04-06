@@ -53,5 +53,4 @@ export {
 } from './errors.js';
 
 // ─── MeshgateClient ──────────────────────────────────────────────────────────
-// Implemented in Phase 3 (MG22-009)
-// export { MeshgateClient } from './client.js';
+export { MeshgateClient } from './client.js';
