@@ -1,4 +1,4 @@
-import { M as MeshgateClient, G as GuardOptions } from './client-DFqNa1Yx.js';
+import { M as MeshgateClient, G as GuardOptions } from './client-Dr9Hovo6.js';
 
 /**
  * @meshgate/sdk/decorators — opt-in TypeScript 5.x standard decorator API.

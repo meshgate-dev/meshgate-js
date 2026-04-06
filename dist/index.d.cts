@@ -1,5 +1,5 @@
-import { a as MeshgateStorageAdapter } from './client-DFqNa1Yx.cjs';
-export { b as GateInfo, c as GateLifecycleHook, d as GatePayload, G as GuardOptions, M as MeshgateClient, e as MeshgateConfig, S as StoredGateRecord } from './client-DFqNa1Yx.cjs';
+import { a as MeshgateStorageAdapter } from './client-Dr9Hovo6.cjs';
+export { b as GateInfo, c as GateLifecycleHook, d as GatePayload, G as GuardOptions, M as MeshgateClient, e as MeshgateConfig, S as StoredGateRecord } from './client-Dr9Hovo6.cjs';
 
 /**
  * A storage adapter that performs no I/O.
@@ -179,6 +179,9 @@ declare class MeshgateExpiredError extends MeshgateError {
  * HTTP trigger: POST /v1/verify-token → 403 `token_exhausted` or 404
  */
 declare class MeshgateOrphanedError extends MeshgateError {
+    /** Machine-readable subcode indicating why the gate was orphaned. */
+    readonly reason?: 'token_exhausted' | 'not_found';
+    constructor(message: string, intent?: string, approvalId?: string, reason?: 'token_exhausted' | 'not_found');
 }
 /**
  * Thrown when cryptographic tamper detection fires — either the AES-256-GCM

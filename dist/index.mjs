@@ -1,3 +1,5 @@
+import lockfile from 'proper-lockfile';
+
 // src/adapters/noop-adapter.ts
 var NoopAdapter = class {
   set() {
@@ -35,6 +37,12 @@ var MeshgateRejectedError = class extends MeshgateError {
 var MeshgateExpiredError = class extends MeshgateError {
 };
 var MeshgateOrphanedError = class extends MeshgateError {
+  /** Machine-readable subcode indicating why the gate was orphaned. */
+  reason;
+  constructor(message, intent, approvalId, reason) {
+    super(message, intent, approvalId);
+    this.reason = reason;
+  }
 };
 var MeshgateTamperError = class extends MeshgateError {
 };
@@ -75,7 +83,17 @@ var FileSystemAdapter = class {
   async set(approvalId, data) {
     const fs = await getFsPromises();
     await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(this.keyPath(approvalId), data, "utf-8");
+    const file = this.keyPath(approvalId);
+    await fs.writeFile(file, "", "utf-8");
+    let release;
+    try {
+      release = await lockfile.lock(file, { stale: 5e3, retries: 3 });
+      await fs.writeFile(file, data, "utf-8");
+    } catch (err) {
+      throw new MeshgateError(`Failed to write gate record: ${String(err)}`);
+    } finally {
+      if (release) await release();
+    }
   }
   async get(approvalId) {
     const fs = await getFsPromises();
@@ -88,11 +106,26 @@ var FileSystemAdapter = class {
   }
   async delete(approvalId) {
     const fs = await getFsPromises();
+    const file = this.keyPath(approvalId);
+    let release;
     try {
-      await fs.unlink(this.keyPath(approvalId));
+      release = await lockfile.lock(file, { stale: 5e3, retries: { retries: 3, minTimeout: 50, maxTimeout: 500 } });
+      await fs.unlink(file);
     } catch (err) {
-      if (err.code === "ENOENT") return;
+      const code = err.code;
+      if (code === "ENOENT") return;
+      if (code === "ELOCKED") {
+        try {
+          await fs.access(file);
+          throw new MeshgateError(`Failed to delete gate record: could not acquire lock after retries`);
+        } catch (accessErr) {
+          if (accessErr.code === "ENOENT") return;
+          throw new MeshgateError(`Failed to delete gate record: ${String(err)}`);
+        }
+      }
       throw new MeshgateError(`Failed to delete gate record: ${String(err)}`);
+    } finally {
+      if (release) await release();
     }
   }
   async listKeys() {
@@ -242,11 +275,11 @@ var MeshgateApiClient = class {
           throw new MeshgateBlockedError(`Intent blocked by policy`);
         }
         if (error === "token_exhausted") {
-          throw new MeshgateOrphanedError(`Token already consumed`);
+          throw new MeshgateOrphanedError(`Token already consumed`, void 0, void 0, "token_exhausted");
         }
         throw new MeshgateAuthError(`Forbidden: ${error || res.statusText}`);
       case 404:
-        throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`);
+        throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`, void 0, void 0, "not_found");
       case 422:
         throw new MeshgateConfigError(`Unprocessable entity: ${error || res.statusText}`);
       case 429: {
@@ -359,8 +392,30 @@ async function computePayloadHash(args) {
   return base64Encode(new Uint8Array(hash));
 }
 
+// src/utils/logger.ts
+var LOG_LEVEL_ORDER = { debug: 0, info: 1, warn: 2, error: 3 };
+function createLogger(level) {
+  const minLevel = LOG_LEVEL_ORDER[level];
+  function emit(msgLevel, event, meta = {}) {
+    if (LOG_LEVEL_ORDER[msgLevel] < minLevel) return;
+    if (msgLevel === "warn") {
+      console.warn("[meshgate]", event, meta);
+    } else if (msgLevel === "error") {
+      console.error("[meshgate]", event, meta);
+    } else {
+      console.log("[meshgate]", event, meta);
+    }
+  }
+  return {
+    debug: (event, meta) => emit("debug", event, meta),
+    info: (event, meta) => emit("info", event, meta),
+    warn: (event, meta) => emit("warn", event, meta),
+    error: (event, meta) => emit("error", event, meta)
+  };
+}
+
 // src/utils/sse-client.ts
-var RECONNECT_DELAYS_MS = [0, 1e3, 2e3];
+var DEFAULT_RECONNECT_DELAYS_MS = [0, 1e3, 2e3];
 var SseClient = class {
   url;
   headers;
@@ -385,7 +440,8 @@ var SseClient = class {
   }
   // ─── Internal ─────────────────────────────────────────────────────────────
   async connectLoop() {
-    const maxAttempts = RECONNECT_DELAYS_MS.length + 1;
+    const delays = this.opts.reconnectDelays ?? DEFAULT_RECONNECT_DELAYS_MS;
+    const maxAttempts = delays.length + 1;
     let consecutiveFailures = 0;
     while (!this.stopped) {
       if (consecutiveFailures >= maxAttempts) {
@@ -393,8 +449,8 @@ var SseClient = class {
         return;
       }
       const delayIndex = consecutiveFailures - 1;
-      if (delayIndex >= 0 && delayIndex < RECONNECT_DELAYS_MS.length) {
-        const delay = RECONNECT_DELAYS_MS[delayIndex] ?? 0;
+      if (delayIndex >= 0 && delayIndex < delays.length) {
+        const delay = delays[delayIndex] ?? 0;
         if (delay > 0) await sleep2(delay);
       }
       if (this.stopped) return;
@@ -486,7 +542,9 @@ var MeshgateClient = class {
   sseUrl;
   sseAuthHeader;
   hooks;
-  debugEnabled;
+  logLevel;
+  logger;
+  sseReconnectDelays;
   /** intent name → registered handler, populated by guard(). */
   handlers = /* @__PURE__ */ new Map();
   /** approvalId → pending entry, populated by guard() and reconcile(). */
@@ -499,6 +557,21 @@ var MeshgateClient = class {
    * .finally() when the run completes or errors.
    */
   reconcilePromise = null;
+  /**
+   * Resolves when the startup reconcile completes (or errors).
+   * guard() awaits this before executing to ensure reconcile-registered
+   * handlers are processed before new live calls proceed.
+   */
+  _reconcileReady;
+  _resolveReconcileReady;
+  /**
+   * Tracks verify-token calls that are currently in-flight (or were in-flight
+   * when a non-fatal error occurred). Used to distinguish:
+   * - `token_exhausted_on_retry`: this instance had an in-flight call when the
+   *   403 arrived (server burned the token, response was lost, now retrying)
+   * - `token_already_used`: no prior in-flight call — another process burned it
+   */
+  _pendingVerify = /* @__PURE__ */ new Set();
   // ─── Constructor ─────────────────────────────────────────────────────────────
   constructor(config) {
     if (!config.apiKey?.trim()) {
@@ -510,14 +583,21 @@ var MeshgateClient = class {
       );
     }
     this.masterSecret = config.localEncryptionKey;
-    this.debugEnabled = config.debug ?? false;
+    this.logLevel = config.debug ? "debug" : config.logLevel ?? "info";
+    this.logger = createLogger(this.logLevel);
     this.hooks = config.hooks ?? {};
+    this.sseReconnectDelays = config.sseReconnectDelays ?? [0, 1e3, 2e3];
     const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
     this.api = new MeshgateApiClient(config.apiKey, baseUrl);
     this.sseUrl = `${baseUrl}/v1/events/stream`;
     this.sseAuthHeader = { Authorization: `Bearer ${config.apiKey}` };
     this.adapter = config.storageAdapter ?? new FileSystemAdapter();
-    void this._reconcile();
+    this._reconcileReady = new Promise((resolve) => {
+      this._resolveReconcileReady = resolve;
+    });
+    void this._reconcile().finally(() => {
+      this._resolveReconcileReady();
+    });
   }
   // ─── guard() ─────────────────────────────────────────────────────────────────
   /**
@@ -559,6 +639,7 @@ var MeshgateClient = class {
   }
   // ─── Private: guard execution ─────────────────────────────────────────────────
   async _executeGuard(fn, options, args) {
+    await this._reconcileReady;
     validateSerializable(args, options.intent);
     let intentArgs;
     if (options.getIntentArgs) {
@@ -609,7 +690,8 @@ var MeshgateClient = class {
       expiresAt,
       iv,
       authTag,
-      ciphertext
+      ciphertext,
+      createdAt: Date.now()
     };
     await this.adapter.set(approvalId, JSON.stringify(record));
     this.ensureSseStarted();
@@ -629,8 +711,12 @@ var MeshgateClient = class {
         await this.fireHook("onGateRejected", gateInfo);
       } else if (err instanceof MeshgateExpiredError) {
         await this.fireHook("onGateExpired", gateInfo);
-      } else if (err instanceof MeshgateOrphanedError) {
-        await this.fireHook("onGateOrphaned", gateInfo);
+      } else {
+        await this.fireOrphanedHook({
+          ...gateInfo,
+          reason: "verify_failed",
+          message: err instanceof Error ? err.message : String(err)
+        });
       }
       throw err;
     }
@@ -645,20 +731,32 @@ var MeshgateClient = class {
    * This is called both from the live guard() flow and from reconcile().
    */
   async _verifyDecryptAndExecute(record, gateInfo, token, fn) {
+    const wasAlreadyPending = this._pendingVerify.has(record.approvalId);
+    this._pendingVerify.add(record.approvalId);
     let verifyRes;
     try {
       verifyRes = await this.api.verifyToken({ approvalId: record.approvalId, token });
+      this._pendingVerify.delete(record.approvalId);
     } catch (err) {
-      await this.adapter.delete(record.approvalId);
       if (err instanceof MeshgateOrphanedError) {
-        await this.fireHook("onGateOrphaned", gateInfo);
+        this._pendingVerify.delete(record.approvalId);
+        await this.adapter.delete(record.approvalId);
+        const reason = err.reason === "token_exhausted" ? wasAlreadyPending ? "token_exhausted_on_retry" : "token_already_used" : "gate_not_found";
+        await this.fireOrphanedHook({ ...gateInfo, reason, message: err.message });
+      } else {
+        await this.adapter.delete(record.approvalId);
       }
       throw err;
     }
     const resolvedNonce = verifyRes.context.gateNonce;
     if (!resolvedNonce) {
+      this._pendingVerify.delete(record.approvalId);
       await this.adapter.delete(record.approvalId);
-      await this.fireHook("onGateOrphaned", gateInfo);
+      await this.fireOrphanedHook({
+        ...gateInfo,
+        reason: "verify_failed",
+        message: "verify-token response is missing gateNonce"
+      });
       throw new MeshgateOrphanedError(
         "verify-token response is missing gateNonce",
         gateInfo.intent,
@@ -703,6 +801,8 @@ var MeshgateClient = class {
       pending: []
     };
     const keys = await this.adapter.listKeys();
+    const approvedGates = [];
+    const pendingGates = [];
     for (const approvalId of keys) {
       const raw = await this.adapter.get(approvalId);
       if (!raw) continue;
@@ -734,24 +834,15 @@ var MeshgateClient = class {
         status = await this.api.getApprovalStatus(approvalId);
       } catch {
         await this.adapter.delete(approvalId);
-        await this.fireHook("onGateOrphaned", gateInfo);
+        await this.fireOrphanedHook({
+          ...gateInfo,
+          reason: "gate_not_found",
+          message: "Approval record not found in cloud"
+        });
         result.orphaned.push(gateInfo);
         continue;
       }
-      if (status.status === "approved") {
-        if (!status.token) {
-          await this.adapter.delete(approvalId);
-          await this.fireHook("onGateOrphaned", gateInfo);
-          result.orphaned.push(gateInfo);
-          continue;
-        }
-        const resumed = await this._reconcileApproved(record, gateInfo, status.token);
-        if (resumed) {
-          result.resumed.push(gateInfo);
-        } else {
-          result.orphaned.push(gateInfo);
-        }
-      } else if (status.status === "rejected") {
+      if (status.status === "rejected") {
         await this.adapter.delete(approvalId);
         await this.fireHook("onGateRejected", gateInfo);
         result.rejected.push(gateInfo);
@@ -759,19 +850,48 @@ var MeshgateClient = class {
         await this.adapter.delete(approvalId);
         await this.fireHook("onGateExpired", gateInfo);
         result.expired.push(gateInfo);
+      } else if (status.status === "approved") {
+        if (!status.token) {
+          await this.adapter.delete(approvalId);
+          await this.fireOrphanedHook({
+            ...gateInfo,
+            reason: "token_already_used",
+            message: "Token already consumed by another process"
+          });
+          result.orphaned.push(gateInfo);
+        } else {
+          approvedGates.push({ record, gateInfo, status });
+        }
       } else {
-        this.ensureSseStarted();
-        this.pendingGates.set(approvalId, {
-          gateInfo,
-          onApproved: (tok) => {
-            void this._reconcileApproved(record, gateInfo, tok);
-          },
-          onTerminated: (err) => {
-            void this._reconcileTerminated(gateInfo, err);
-          }
-        });
-        result.pending.push(gateInfo);
+        pendingGates.push({ record, gateInfo, status });
       }
+    }
+    approvedGates.sort((a, b) => {
+      const ta = a.status.resolvedAt ? new Date(a.status.resolvedAt).getTime() : 0;
+      const tb = b.status.resolvedAt ? new Date(b.status.resolvedAt).getTime() : 0;
+      return tb - ta;
+    });
+    pendingGates.sort((a, b) => (a.record.createdAt ?? 0) - (b.record.createdAt ?? 0));
+    for (const { record, gateInfo, status } of approvedGates) {
+      const resumed = await this._reconcileApproved(record, gateInfo, status.token);
+      if (resumed) {
+        result.resumed.push(gateInfo);
+      } else {
+        result.orphaned.push(gateInfo);
+      }
+    }
+    for (const { record, gateInfo } of pendingGates) {
+      this.ensureSseStarted();
+      this.pendingGates.set(gateInfo.approvalId, {
+        gateInfo,
+        onApproved: (tok) => {
+          void this._reconcileApproved(record, gateInfo, tok);
+        },
+        onTerminated: (err) => {
+          void this._reconcileTerminated(gateInfo, err);
+        }
+      });
+      result.pending.push(gateInfo);
     }
     return result;
   }
@@ -784,7 +904,11 @@ var MeshgateClient = class {
     if (!handler) {
       await this.adapter.delete(record.approvalId);
       this.pendingGates.delete(record.approvalId);
-      await this.fireHook("onGateOrphaned", gateInfo);
+      await this.fireOrphanedHook({
+        ...gateInfo,
+        reason: "gate_not_found",
+        message: `No handler registered for intent "${record.intent}" \u2014 was it renamed or removed?`
+      });
       return false;
     }
     try {
@@ -799,8 +923,15 @@ var MeshgateClient = class {
           }
         }
       );
-    } catch {
+    } catch (err) {
       this.pendingGates.delete(record.approvalId);
+      if (err instanceof MeshgateTamperError) {
+        await this.fireOrphanedHook({
+          ...gateInfo,
+          reason: "decryption_failed",
+          message: "Local encryption key may have been rotated. Existing gates cannot be decrypted."
+        });
+      }
       return false;
     }
     this.pendingGates.delete(record.approvalId);
@@ -818,7 +949,11 @@ var MeshgateClient = class {
     } else if (err instanceof MeshgateExpiredError) {
       await this.fireHook("onGateExpired", gateInfo);
     } else {
-      await this.fireHook("onGateOrphaned", gateInfo);
+      await this.fireOrphanedHook({
+        ...gateInfo,
+        reason: "verify_failed",
+        message: err instanceof Error ? err.message : String(err)
+      });
     }
   }
   // ─── Private: SSE ────────────────────────────────────────────────────────────
@@ -827,7 +962,8 @@ var MeshgateClient = class {
     this.sseClient = new SseClient(this.sseUrl, this.sseAuthHeader, {
       onEvent: (event) => this.handleSseEvent(event),
       onPollFallback: () => this.handleSseFallback(),
-      onError: (err) => this.log("sse:error", { error: String(err) })
+      onError: (err) => this.log("sse:error", { error: String(err) }),
+      reconnectDelays: this.sseReconnectDelays
     });
     this.sseClient.start();
     this.log("sse:started", {});
@@ -934,10 +1070,15 @@ var MeshgateClient = class {
       await hook(gateInfo);
     }
   }
+  async fireOrphanedHook(event) {
+    const hook = this.hooks.onGateOrphaned;
+    if (hook) {
+      await hook(event);
+    }
+  }
   // ─── Private: debug logging ───────────────────────────────────────────────────
   log(event, meta) {
-    if (!this.debugEnabled) return;
-    console.log("[meshgate]", event, meta);
+    this.logger.debug(event, meta);
   }
 };
 function validateSerializable(args, intent) {
