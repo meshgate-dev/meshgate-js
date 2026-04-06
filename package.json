@@ -36,10 +36,23 @@
     "hitl",
     "human-in-the-loop",
     "ai",
-    "sdk"
+    "agent",
+    "sdk",
+    "approval",
+    "authorization",
+    "agentic",
+    "typescript"
   ],
-  "author": "Meshgate",
+  "author": "Meshgate <support@meshgate.dev>",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meshgate-dev/meshgate-js.git"
+  },
+  "homepage": "https://meshgate.dev",
+  "bugs": {
+    "url": "https://github.com/meshgate-dev/meshgate-js/issues"
+  },
   "engines": {
     "node": ">=18.0.0"
   },
