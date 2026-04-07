@@ -1,5 +1,11 @@
 # @meshgate/sdk
 
+## 0.2.1
+
+### Patch Changes
+
+- 2836649: Fix SseClient silently dropping all events when server omits named "event:" SSE lines. Fall back to the "type" field embedded in the JSON data payload so guard() no longer hangs indefinitely against servers that embed the event type in the data body instead of the SSE event line.
+
 ## 0.2.0
 
 ### Minor Changes
