@@ -534,7 +534,7 @@ ${chunk2}` : chunk2;
     return readAtLeastOneChunk;
   }
   dispatchEvent(raw) {
-    if (!raw.type || !raw.data) return;
+    if (!raw.data) return;
     let parsed;
     try {
       parsed = JSON.parse(raw.data);
@@ -542,8 +542,10 @@ ${chunk2}` : chunk2;
       return;
     }
     if (!isObject(parsed) || typeof parsed["entityId"] !== "string") return;
+    const type = raw.type ?? (typeof parsed["type"] === "string" ? parsed["type"] : void 0);
+    if (!type) return;
     const event = {
-      type: raw.type,
+      type,
       entityId: parsed["entityId"],
       payload: parsed["payload"] ?? null
     };

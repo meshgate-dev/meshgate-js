@@ -164,7 +164,7 @@ export class SseClient {
   }
 
   private dispatchEvent(raw: Partial<SseEvent> & { data?: string }): void {
-    if (!raw.type || !raw.data) return;
+    if (!raw.data) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.data);
@@ -172,8 +172,13 @@ export class SseClient {
       return; // drop malformed events
     }
     if (!isObject(parsed) || typeof parsed['entityId'] !== 'string') return;
+    // Prefer the named "event:" line type; fall back to the "type" field embedded
+    // in the JSON data body. This handles servers that embed the event type in the
+    // payload rather than emitting a dedicated SSE "event:" line.
+    const type = raw.type ?? (typeof parsed['type'] === 'string' ? parsed['type'] : undefined);
+    if (!type) return;
     const event: SseEvent = {
-      type: raw.type,
+      type,
       entityId: parsed['entityId'],
       payload: parsed['payload'] ?? null,
     };
