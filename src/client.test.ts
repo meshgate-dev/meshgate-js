@@ -449,7 +449,7 @@ describe('MeshgateClient — guard() serialization', () => {
     const client = makeClient();
     const wrapped = client.guard(async (fn: () => void) => fn(), {
       intent: 'fn_test',
-    } as Parameters<typeof client.guard>[1]);
+    });
 
     await expect(wrapped(() => undefined)).rejects.toBeInstanceOf(MeshgateSerializationError);
     expect(fetchSpy).not.toHaveBeenCalled();
