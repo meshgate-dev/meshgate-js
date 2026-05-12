@@ -18,6 +18,16 @@ import type { MeshgateStorageAdapter } from './types.js';
 
 type FsPromises = typeof import('node:fs/promises');
 
+function getDefaultBaseDir(): string {
+  if (typeof process === 'undefined' || typeof process.cwd !== 'function') {
+    throw new MeshgateConfigError(
+      'FileSystemAdapter requires Node.js or Bun. ' +
+        'Provide CloudflareKVAdapter or NoopAdapter in edge runtimes.',
+    );
+  }
+  return process.cwd();
+}
+
 async function getFsPromises(): Promise<FsPromises> {
   try {
     return await import('node:fs/promises');
@@ -34,7 +44,7 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
   private readonly dir: string;
 
   constructor(baseDir?: string) {
-    this.baseDir = baseDir ?? process.cwd();
+    this.baseDir = baseDir ?? getDefaultBaseDir();
     this.dir = `${this.baseDir}/.meshgate`;
   }
 
@@ -84,7 +94,10 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
     try {
       // retries: minTimeout 50ms, maxTimeout 500ms keeps test + prod overhead low
       // while still safely surviving brief competing-process lock holds.
-      release = await lockfile.lock(file, { stale: 5000, retries: { retries: 3, minTimeout: 50, maxTimeout: 500 } });
+      release = await lockfile.lock(file, {
+        stale: 5000,
+        retries: { retries: 3, minTimeout: 50, maxTimeout: 500 },
+      });
       try {
         await fs.unlink(file);
       } catch (unlinkErr) {
@@ -105,11 +118,15 @@ export class FileSystemAdapter implements MeshgateStorageAdapter {
           await fs.unlink(file);
         } catch (unlinkErr) {
           if ((unlinkErr as NodeJS.ErrnoException).code === 'ENOENT') return;
-          throw new MeshgateError(`Failed to delete gate record: could not acquire lock after retries`);
+          throw new MeshgateError(
+            `Failed to delete gate record: could not acquire lock after retries`,
+          );
         }
         return;
       }
-      throw err instanceof MeshgateError ? err : new MeshgateError(`Failed to delete gate record: ${String(err)}`);
+      throw err instanceof MeshgateError
+        ? err
+        : new MeshgateError(`Failed to delete gate record: ${String(err)}`);
     } finally {
       if (release) await release();
     }

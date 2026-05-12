@@ -26,9 +26,11 @@ import type { MeshgateStorageAdapter } from './adapters/types.js';
 import { MeshgateApiClient } from './api/client.js';
 import type { ApprovalStatusResponse, SseEvent } from './api/types.js';
 import {
+  MeshgateAuthError,
   MeshgateBlockedError,
   MeshgateConfigError,
   MeshgateExpiredError,
+  MeshgateNetworkError,
   MeshgateOrphanedError,
   MeshgateRejectedError,
   MeshgateSerializationError,
@@ -307,19 +309,21 @@ export class MeshgateClient {
     };
     await this.adapter.set(approvalId, JSON.stringify(record));
 
-    // Subscribe to SSE (shared connection, filtered client-side by approvalId)
+    // Register the pending gate before opening SSE so an immediate connection
+    // failure can safely fall back to polling this approval.
+    const approvalTokenPromise = new Promise<string>((resolve, reject) => {
+      this.pendingGates.set(approvalId, {
+        gateInfo,
+        onApproved: resolve,
+        onTerminated: reject,
+      });
+    });
     this.ensureSseStarted();
 
     // Wait for approval signal from SSE or polling fallback
     let token: string;
     try {
-      token = await new Promise<string>((resolve, reject) => {
-        this.pendingGates.set(approvalId, {
-          gateInfo,
-          onApproved: resolve,
-          onTerminated: reject,
-        });
-      });
+      token = await approvalTokenPromise;
     } catch (err) {
       // Gate reached a terminal state (rejected / expired / orphaned)
       await this.adapter.delete(approvalId);
@@ -613,18 +617,13 @@ export class MeshgateClient {
     }
 
     try {
-      await this._verifyDecryptAndExecute(
-        record,
-        gateInfo,
-        token,
-        async (...args: unknown[]) => {
-          try {
-            await handler.fn(...args);
-          } catch {
-            // Handler errors don't fail reconcile — the gate was successfully resumed
-          }
-        },
-      );
+      await this._verifyDecryptAndExecute(record, gateInfo, token, async (...args: unknown[]) => {
+        try {
+          await handler.fn(...args);
+        } catch {
+          // Handler errors don't fail reconcile — the gate was successfully resumed
+        }
+      });
     } catch (err) {
       this.pendingGates.delete(record.approvalId);
       if (err instanceof MeshgateTamperError) {
@@ -715,11 +714,7 @@ export class MeshgateClient {
       this.pendingGates.delete(approvalId);
       this.cleanupAfterGate();
       entry.onTerminated(
-        new MeshgateExpiredError(
-          'Gate expired before approval',
-          entry.gateInfo.intent,
-          approvalId,
-        ),
+        new MeshgateExpiredError('Gate expired before approval', entry.gateInfo.intent, approvalId),
       );
     }
   }
@@ -745,9 +740,36 @@ export class MeshgateClient {
       let status: ApprovalStatusResponse;
       try {
         status = await this.api.getApprovalStatus(approvalId);
-      } catch {
-        // Network / 5xx errors — continue polling
-        continue;
+      } catch (err) {
+        // Network / 5xx errors are transient in polling mode; auth and missing
+        // approval records are terminal and must not leave the caller hanging.
+        if (err instanceof MeshgateNetworkError) {
+          continue;
+        }
+        await this.adapter.delete(approvalId);
+        this.pendingGates.delete(approvalId);
+        this.cleanupAfterGate();
+
+        const reason =
+          err instanceof MeshgateOrphanedError && err.reason === 'not_found'
+            ? 'gate_not_found'
+            : 'verify_failed';
+        const message =
+          err instanceof MeshgateAuthError
+            ? `Status polling is not authorized: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        await this.fireOrphanedHook({ ...entry.gateInfo, reason, message });
+        entry.onTerminated(
+          new MeshgateOrphanedError(
+            message,
+            entry.gateInfo.intent,
+            approvalId,
+            reason === 'gate_not_found' ? 'not_found' : undefined,
+          ),
+        );
+        return;
       }
 
       if (!this.pendingGates.has(approvalId)) break;

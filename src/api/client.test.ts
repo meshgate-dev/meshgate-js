@@ -19,10 +19,10 @@ const baseIntentReq: IntentRequest = {
   gateNonce: 'bm9uY2U=',
 };
 
-function makeRes(status: number, body: unknown): Response {
+function makeRes(status: number, body: unknown, headers?: HeadersInit): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
   });
 }
 
@@ -102,6 +102,25 @@ describe('MeshgateApiClient', () => {
       expect(res.outcome).toBe('gated');
     });
 
+    it('retries on 429 using Retry-After and succeeds on second attempt', async () => {
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(makeRes(429, { error: 'rate_limited' }, { 'Retry-After': '0' }))
+        .mockResolvedValueOnce(
+          makeRes(201, {
+            outcome: 'gated',
+            approvalId: 'appr_rate_limited',
+            intent: 'process_refund',
+            expiresAt: '2099-01-01T00:00:00Z',
+          }),
+        );
+
+      const res = await client.registerIntent(baseIntentReq);
+
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(res.outcome).toBe('gated');
+    });
+
     it('throws MeshgateNetworkError after 3 consecutive 503s', async () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(makeRes(503, {}));
       await expect(client.registerIntent(baseIntentReq)).rejects.toBeInstanceOf(
@@ -136,17 +155,15 @@ describe('MeshgateApiClient', () => {
     });
 
     it('URL-encodes the approvalId', async () => {
-      const spy = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValueOnce(
-          makeRes(200, {
-            id: 'a/b',
-            status: 'pending',
-            resolvedAt: null,
-            token: null,
-            gateNonce: null,
-          }),
-        );
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeRes(200, {
+          id: 'a/b',
+          status: 'pending',
+          resolvedAt: null,
+          token: null,
+          gateNonce: null,
+        }),
+      );
       await client.getApprovalStatus('a/b');
       expect(spy).toHaveBeenCalledWith(expect.stringContaining('/a%2Fb/'), expect.any(Object));
     });
@@ -198,12 +215,10 @@ describe('MeshgateApiClient', () => {
     });
 
     it('retries on 503 and throws MeshgateNetworkError after 3 attempts', async () => {
-      const spy = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(makeRes(503, {}));
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(makeRes(503, {}));
       await expect(
         client.verifyToken({ approvalId: 'appr_123', token: 'tok_abc' }),
-      ).rejects.toBeInstanceOf(MeshgateNetworkError);
+      ).rejects.toThrow('POST /v1/verify-token failed after 3 attempts');
       // 3 attempts total (same retry policy as registerIntent)
       expect(spy).toHaveBeenCalledTimes(3);
     });
