@@ -4,6 +4,11 @@ TypeScript SDK for [Meshgate](https://meshgate.dev) — Human-in-the-Loop (HITL)
 
 Wrap any async function with a single `.guard()` call. When policy requires human sign-off, execution suspends automatically, notifies your approver, and resumes with the original arguments once approved — all with end-to-end encryption.
 
+## Releasing
+
+SDK releases must pass the release-candidate checklist before publishing to npm.
+See [RELEASING.md](./RELEASING.md) for details.
+
 ## Installation
 
 ```bash

@@ -42,3 +42,6 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify npm package contents
+        run: npm pack --dry-run
