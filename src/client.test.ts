@@ -62,7 +62,12 @@ function makeAllowedRes() {
 }
 
 function makeBlockedRes() {
-  return makeJsonRes(403, { error: 'intent_blocked', outcome: 'blocked', intent: 'test_intent', matchedPolicy: {} });
+  return makeJsonRes(403, {
+    error: 'intent_blocked',
+    outcome: 'blocked',
+    intent: 'test_intent',
+    matchedPolicy: {},
+  });
 }
 
 function makeGatedRes(approvalId = 'appr_001', expiresAt = '2099-01-01T00:00:00Z') {
@@ -167,21 +172,21 @@ function setupGatedFlowMocks(approvalId: string, token: string, sseStream: Respo
 
 describe('MeshgateClient — constructor', () => {
   it('throws MeshgateConfigError when apiKey is missing', () => {
-    expect(
-      () => new MeshgateClient({ apiKey: '', localEncryptionKey: LOCAL_SECRET }),
-    ).toThrow(MeshgateConfigError);
+    expect(() => new MeshgateClient({ apiKey: '', localEncryptionKey: LOCAL_SECRET })).toThrow(
+      MeshgateConfigError,
+    );
   });
 
   it('throws MeshgateConfigError when apiKey is whitespace only', () => {
-    expect(
-      () => new MeshgateClient({ apiKey: '   ', localEncryptionKey: LOCAL_SECRET }),
-    ).toThrow(MeshgateConfigError);
+    expect(() => new MeshgateClient({ apiKey: '   ', localEncryptionKey: LOCAL_SECRET })).toThrow(
+      MeshgateConfigError,
+    );
   });
 
   it('throws MeshgateConfigError when localEncryptionKey is too short', () => {
-    expect(
-      () => new MeshgateClient({ apiKey: API_KEY, localEncryptionKey: 'short' }),
-    ).toThrow(MeshgateConfigError);
+    expect(() => new MeshgateClient({ apiKey: API_KEY, localEncryptionKey: 'short' })).toThrow(
+      MeshgateConfigError,
+    );
   });
 
   it('throws MeshgateConfigError when localEncryptionKey is exactly 31 chars', () => {
@@ -197,6 +202,23 @@ describe('MeshgateClient — constructor', () => {
   it('uses NoopAdapter when explicitly provided', () => {
     // Should not throw (NoopAdapter doesn't touch filesystem)
     expect(() => makeClient({ storageAdapter: new NoopAdapter() })).not.toThrow();
+  });
+
+  it('throws MeshgateConfigError when default filesystem storage is unavailable', () => {
+    const originalProcess = globalThis.process;
+    vi.stubGlobal('process', undefined);
+
+    try {
+      expect(
+        () =>
+          new MeshgateClient({
+            apiKey: API_KEY,
+            localEncryptionKey: LOCAL_SECRET,
+          }),
+      ).toThrow(MeshgateConfigError);
+    } finally {
+      vi.stubGlobal('process', originalProcess);
+    }
   });
 
   it('fires _reconcileOnStartup() as a background Promise without blocking constructor', () => {
@@ -271,7 +293,7 @@ describe('MeshgateClient — guard() allowed (200)', () => {
 
     await wrapped(5);
     const call = fetchSpy.mock.calls[0];
-    const body = JSON.parse((call?.[1])?.body as string) as Record<string, unknown>;
+    const body = JSON.parse(call?.[1]?.body as string) as Record<string, unknown>;
     expect(body['intentArgs']).toEqual({ x: 5 });
   });
 });
@@ -403,7 +425,8 @@ describe('MeshgateClient — guard() gated (201)', () => {
         return makeGatedRes(approvalId);
       }
       if (url.includes('/v1/events/stream')) return makeSseApprovalStream(approvalId, 'tok_tamper');
-      if (url.endsWith('/v1/verify-token')) return makeVerifyRes(approvalId, 'WRONGHASH==', capturedGateNonce);
+      if (url.endsWith('/v1/verify-token'))
+        return makeVerifyRes(approvalId, 'WRONGHASH==', capturedGateNonce);
       throw new Error(`Unexpected: ${url}`);
     });
 
@@ -427,6 +450,64 @@ describe('MeshgateClient — guard() gated (201)', () => {
 
     await expect(wrapped()).rejects.toBeInstanceOf(MeshgateOrphanedError);
     expect(onGateOrphaned).toHaveBeenCalledOnce();
+  });
+
+  it('cleans up and rejects when polling fallback receives a terminal status error', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const approvalId = 'appr_poll_missing';
+      const adapter = new NoopAdapter();
+      const deleteSpy = vi.spyOn(adapter, 'delete');
+      const onGateOrphaned = vi.fn();
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes(`/v1/approvals/${approvalId}/status`)) {
+          return makeJsonRes(404, { error: 'not_found' });
+        }
+        throw new Error(`Unexpected: ${url}`);
+      });
+
+      const client = makeClient({
+        storageAdapter: adapter,
+        hooks: { onGateOrphaned },
+      });
+      const gateInfo: GateInfo = {
+        approvalId,
+        intent: 'poll_missing',
+        expiresAt: '2099-01-01T00:00:00Z',
+      };
+      let onTerminated!: (err: unknown) => void;
+      const terminalError = new Promise<unknown>((resolve) => {
+        onTerminated = resolve;
+      });
+      type PendingGateTestEntry = {
+        gateInfo: GateInfo;
+        onApproved: (token: string) => void;
+        onTerminated: (err: unknown) => void;
+      };
+      const entry: PendingGateTestEntry = {
+        gateInfo,
+        onApproved: vi.fn(),
+        onTerminated,
+      };
+      const internals = client as unknown as {
+        pendingGates: Map<string, PendingGateTestEntry>;
+        pollGate(approvalId: string, entry: PendingGateTestEntry): Promise<void>;
+      };
+      internals.pendingGates.set(approvalId, entry);
+      const pollDone = internals.pollGate(approvalId, entry);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(await terminalError).toBeInstanceOf(MeshgateOrphanedError);
+      await pollDone;
+      expect(deleteSpy).toHaveBeenCalledWith(approvalId);
+      expect(onGateOrphaned).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -470,7 +551,8 @@ describe('MeshgateClient — guard() serialization', () => {
     const client = makeClient();
     const wrapped = client.guard(async (x: number) => x, {
       intent: 'flat_test',
-      getIntentArgs: (x) => ({ x, nested: { bad: true } } as unknown as Record<string, string | number | boolean>),
+      getIntentArgs: (x) =>
+        ({ x, nested: { bad: true } }) as unknown as Record<string, string | number | boolean>,
     });
 
     await expect(wrapped(1)).rejects.toBeInstanceOf(MeshgateSerializationError);
@@ -492,7 +574,9 @@ describe('MeshgateClient — guard() serialization', () => {
 
 describe('validateSerializable', () => {
   it('does not throw for strings, numbers, booleans, null, plain objects, arrays', () => {
-    expect(() => validateSerializable(['hello', 1, true, null, { a: 1 }, [1, 2]], 'test')).not.toThrow();
+    expect(() =>
+      validateSerializable(['hello', 1, true, null, { a: 1 }, [1, 2]], 'test'),
+    ).not.toThrow();
   });
 
   it('throws for Date', () => {
@@ -500,7 +584,9 @@ describe('validateSerializable', () => {
   });
 
   it('throws for function', () => {
-    expect(() => validateSerializable([() => undefined], 'test')).toThrow(MeshgateSerializationError);
+    expect(() => validateSerializable([() => undefined], 'test')).toThrow(
+      MeshgateSerializationError,
+    );
   });
 
   it('throws for symbol', () => {
@@ -533,9 +619,7 @@ describe('validateSerializable', () => {
 
 describe('validateIntentArgsFlatness', () => {
   it('does not throw for flat string/number/boolean values', () => {
-    expect(() =>
-      validateIntentArgsFlatness({ a: 'hello', b: 42, c: true }, 'test'),
-    ).not.toThrow();
+    expect(() => validateIntentArgsFlatness({ a: 'hello', b: 42, c: true }, 'test')).not.toThrow();
   });
 
   it('throws for null value', () => {
@@ -666,9 +750,7 @@ describe('MeshgateClient — startup reconcile', () => {
       delete: vi.fn().mockResolvedValue(undefined),
     };
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      makeJsonRes(404, { error: 'not_found' }),
-    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(makeJsonRes(404, { error: 'not_found' }));
 
     const onGateOrphaned = vi.fn();
     const client = makeClient({ storageAdapter: adapter, hooks: { onGateOrphaned } });
@@ -752,10 +834,17 @@ describe('MeshgateClient — startup reconcile', () => {
       )
       // SSE connection (stays open / returns empty to avoid reconnect loops)
       .mockResolvedValueOnce(
-        new Response(new ReadableStream({ start(c) { c.close(); } }), {
-          status: 200,
-          headers: { 'Content-Type': 'text/event-stream' },
-        }),
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.close();
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          },
+        ),
       );
 
     const client = makeClient({ storageAdapter: adapter });
@@ -822,7 +911,9 @@ describe('@guardrail decorator', () => {
     expect(() => {
       class DupService {
         @guardrail(client, { intent: 'shared_intent' })
-        async act(): Promise<void> {/* */}
+        async act(): Promise<void> {
+          /* */
+        }
       }
       void DupService;
     }).toThrow(MeshgateConfigError);
