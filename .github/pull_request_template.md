@@ -20,9 +20,8 @@ If this PR is a release candidate:
 
 - [ ] `npm pack --dry-run` passed.
 - [ ] A release-candidate tarball was produced with `npm pack`.
-- [ ] The tarball was validated against the private Meshgate application.
-- [ ] Meshgate Test remote E2E passed before npm publish.
-- [ ] No private staging secrets, tenant IDs, or internal env values are included in this PR.
+- [ ] The tarball passed downstream compatibility validation before npm publish.
+- [ ] No non-public credentials, tokens, tenant IDs, URLs, or internal env values are included in this PR.
 
 ## Notes
 

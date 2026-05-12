@@ -1,19 +1,19 @@
 # Releasing `@meshgate/sdk`
 
-This repository is public, so this checklist describes the release contract without
-including private Meshgate Test credentials, tenant IDs, or internal staging setup.
+This repository is public, so this checklist describes only the release contract.
+Operational compatibility details belong outside this repo.
 
 ## Release Rule
 
 Do not publish a new SDK version to npm until the packed release candidate has
-passed both SDK-local checks and Meshgate application compatibility checks.
+passed both SDK-local checks and downstream compatibility validation.
 
 The npm package should be the artifact of a verified release, not the first place
 we discover app compatibility issues.
 
 This repo uses Changesets. The publish workflow may publish after the generated
-version PR is merged to `main`, so do not merge that version PR until internal
-Meshgate Test validation is green.
+version PR is merged to `main`, so do not merge that version PR until the
+downstream compatibility gate is green.
 
 ## Release Candidate Flow
 
@@ -42,16 +42,14 @@ Meshgate Test validation is green.
    ```
 
    This produces a file like `meshgate-sdk-0.2.3.tgz`. Treat this tarball as the
-   release candidate that must be tested by the consuming Meshgate application.
+   release candidate that must be tested by the downstream compatibility gate.
 
-4. Validate the tarball against Meshgate Test.
-   - Install the tarball into the private Meshgate application repository.
-   - Run the Ratify local E2E suite.
-   - Run the Ratify remote E2E suite against Meshgate Test.
-   - Confirm the SDK pilot flows pass with the tarball installed.
-
-   The detailed commands and environment setup live in the private Meshgate
-   repository because they reference internal test infrastructure.
+4. Complete downstream compatibility validation.
+   - Hand off the tarball to the approved internal release gate.
+   - Confirm the downstream application compatibility suite passes with the
+     tarball installed.
+   - Record pass/fail evidence in the release PR without exposing non-public
+     commands, URLs, tenant identifiers, or environment values.
 
 5. Publish only after compatibility is green.
 
@@ -66,7 +64,7 @@ Meshgate Test validation is green.
    npm view @meshgate/sdk dist.tarball
    ```
 
-7. Update consuming apps to the published version.
+7. Update downstream consumers to the published version.
    - Replace any tarball-based test dependency with the published semver.
    - Open a small dependency bump PR in the consuming application repository.
    - Re-run the app-side checks if the published artifact differs from the
@@ -81,5 +79,5 @@ validation flow. Do not reuse a failed tarball as release evidence.
 
 ## Public Repo Safety
 
-Do not commit, paste, or reference private staging secrets in this repository.
-Internal Meshgate Test details belong in the private application repository.
+Do not commit, paste, or reference non-public credentials, tokens, tenant
+identifiers, environment URLs, or internal test commands in this repository.

@@ -6,9 +6,8 @@ Wrap any async function with a single `.guard()` call. When policy requires huma
 
 ## Releasing
 
-SDK releases must be validated against the consuming Meshgate application before
-publishing to npm. See [RELEASING.md](./RELEASING.md) for the release-candidate
-checklist.
+SDK releases must pass the release-candidate checklist before publishing to npm.
+See [RELEASING.md](./RELEASING.md) for details.
 
 ## Installation
 
