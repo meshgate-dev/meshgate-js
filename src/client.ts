@@ -78,6 +78,14 @@ const DEFAULT_BASE_URL = 'https://api.meshgate.dev';
 /** Exponential backoff delays for polling fallback, capped at 30 s. */
 const POLL_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
 
+const SDK_SSE_EVENT_TYPES = ['approval.approved', 'approval.rejected', 'approval.expired'] as const;
+
+function buildSseUrl(baseUrl: string): string {
+  const url = new URL('/v1/events/stream', `${baseUrl}/`);
+  url.searchParams.set('eventTypes', SDK_SSE_EVENT_TYPES.join(','));
+  return url.toString();
+}
+
 // ─── MeshgateClient ───────────────────────────────────────────────────────────
 
 export class MeshgateClient {
@@ -152,7 +160,7 @@ export class MeshgateClient {
 
     const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
     this.api = new MeshgateApiClient(config.apiKey, baseUrl);
-    this.sseUrl = `${baseUrl}/v1/events/stream`;
+    this.sseUrl = buildSseUrl(baseUrl);
     this.sseAuthHeader = { Authorization: `Bearer ${config.apiKey}` };
 
     this.adapter = config.storageAdapter ?? new FileSystemAdapter();
@@ -307,7 +315,7 @@ export class MeshgateClient {
     };
     await this.adapter.set(approvalId, JSON.stringify(record));
 
-    // Subscribe to SSE (shared connection, filtered client-side by approvalId)
+    // Subscribe to terminal approval SSE events and still filter locally by approvalId.
     this.ensureSseStarted();
 
     // Wait for approval signal from SSE or polling fallback
@@ -613,18 +621,13 @@ export class MeshgateClient {
     }
 
     try {
-      await this._verifyDecryptAndExecute(
-        record,
-        gateInfo,
-        token,
-        async (...args: unknown[]) => {
-          try {
-            await handler.fn(...args);
-          } catch {
-            // Handler errors don't fail reconcile — the gate was successfully resumed
-          }
-        },
-      );
+      await this._verifyDecryptAndExecute(record, gateInfo, token, async (...args: unknown[]) => {
+        try {
+          await handler.fn(...args);
+        } catch {
+          // Handler errors don't fail reconcile — the gate was successfully resumed
+        }
+      });
     } catch (err) {
       this.pendingGates.delete(record.approvalId);
       if (err instanceof MeshgateTamperError) {
@@ -715,11 +718,7 @@ export class MeshgateClient {
       this.pendingGates.delete(approvalId);
       this.cleanupAfterGate();
       entry.onTerminated(
-        new MeshgateExpiredError(
-          'Gate expired before approval',
-          entry.gateInfo.intent,
-          approvalId,
-        ),
+        new MeshgateExpiredError('Gate expired before approval', entry.gateInfo.intent, approvalId),
       );
     }
   }

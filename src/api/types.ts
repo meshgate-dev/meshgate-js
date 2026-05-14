@@ -159,9 +159,10 @@ export interface VerifyTokenResponse {
 /**
  * A parsed event from the GET /v1/events/stream SSE endpoint.
  *
- * The SDK subscribes once per client and filters events client-side.
- * Only `approval.approved` events where `entityId === approvalId` trigger
- * the verify-token flow. All other events are discarded.
+ * The SDK asks the stream for terminal approval events and still filters
+ * client-side by approvalId. Only `approval.approved` events where
+ * `entityId === approvalId` trigger the verify-token flow. All other events
+ * are discarded.
  */
 export interface SseEvent {
   /** Event type, e.g. `'approval.approved'`, `'approval.rejected'`, `'approval.expired'` */
