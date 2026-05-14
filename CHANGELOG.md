@@ -1,5 +1,20 @@
 # @meshgate/sdk
 
+## 0.2.2
+
+### Patch Changes
+
+- c363033: Harden SDK failure handling for guarded calls and edge runtimes.
+  - Retry intent registration and token verification on retryable 5xx responses, and honor `Retry-After` for 429 responses.
+  - Prevent polling fallback from leaving guarded calls pending forever when approval status checks return terminal auth or not-found errors.
+  - Return a clear `MeshgateConfigError` when the default filesystem storage adapter is used in edge runtimes.
+
+## 0.2.1
+
+### Patch Changes
+
+- 2836649: Fix SseClient silently dropping all events when server omits named "event:" SSE lines. Fall back to the "type" field embedded in the JSON data payload so guard() no longer hangs indefinitely against servers that embed the event type in the data body instead of the SSE event line.
+
 ## 0.2.0
 
 ### Minor Changes

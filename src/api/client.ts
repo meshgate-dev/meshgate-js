@@ -54,7 +54,9 @@ export class MeshgateApiClient {
   // ─── POST /v1/intent ───────────────────────────────────────────────────────
 
   async registerIntent(req: IntentRequest): Promise<IntentResponse> {
-    return this.withRetry(() => this.post<IntentResponse>('/v1/intent', req, { retryOn503: true }));
+    return this.withRetry('POST /v1/intent', () =>
+      this.post<IntentResponse>('/v1/intent', req, { retryOn5xx: true }),
+    );
   }
 
   // ─── GET /v1/approvals/:id/status ─────────────────────────────────────────
@@ -68,8 +70,8 @@ export class MeshgateApiClient {
   // ─── POST /v1/verify-token ─────────────────────────────────────────────────
 
   verifyToken(req: VerifyTokenRequest): Promise<VerifyTokenResponse> {
-    return this.withRetry(() =>
-      this.post<VerifyTokenResponse>('/v1/verify-token', req, { retryOn503: true }),
+    return this.withRetry('POST /v1/verify-token', () =>
+      this.post<VerifyTokenResponse>('/v1/verify-token', req, { retryOn5xx: true }),
     );
   }
 
@@ -89,7 +91,7 @@ export class MeshgateApiClient {
     return this.parseResponse<T>(res);
   }
 
-  private async post<T>(path: string, body: unknown, opts: { retryOn503: boolean }): Promise<T> {
+  private async post<T>(path: string, body: unknown, opts: { retryOn5xx: boolean }): Promise<T> {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}${path}`, {
@@ -101,25 +103,31 @@ export class MeshgateApiClient {
     } catch (err) {
       throw new MeshgateNetworkError(`Network error: ${String(err)}`);
     }
-    if (opts.retryOn503 && res.status === 503) {
+    if (opts.retryOn5xx && res.status >= 500) {
       // Signal to withRetry that this attempt should be retried
-      throw new RetryableError(`HTTP 503 from ${path}`);
+      throw new RetryableError(`HTTP ${res.status} from ${path}`);
     }
     return this.parseResponse<T>(res);
   }
 
-  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  private async withRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     let lastErr: unknown;
+    let nextDelayMs = 0;
+
     for (let i = 0; i < RETRY_DELAYS_MS.length; i++) {
-      const delay = RETRY_DELAYS_MS[i] ?? 0;
-      if (delay > 0) {
-        await sleep(delay);
+      if (nextDelayMs > 0) {
+        await sleep(nextDelayMs);
       }
+
       try {
         return await fn();
       } catch (err) {
         if (err instanceof RetryableError || err instanceof MeshgateNetworkError) {
           lastErr = err;
+          nextDelayMs =
+            err instanceof RetryableError && err.retryAfterMs !== undefined
+              ? err.retryAfterMs
+              : (RETRY_DELAYS_MS[i + 1] ?? 0);
           continue;
         }
         throw err;
@@ -127,7 +135,7 @@ export class MeshgateApiClient {
     }
     if (lastErr instanceof MeshgateNetworkError) throw lastErr;
     throw new MeshgateNetworkError(
-      `POST /v1/intent failed after ${RETRY_DELAYS_MS.length} attempts: ${String(lastErr)}`,
+      `${operation} failed after ${RETRY_DELAYS_MS.length} attempts: ${String(lastErr)}`,
     );
   }
 
@@ -155,17 +163,28 @@ export class MeshgateApiClient {
           throw new MeshgateBlockedError(`Intent blocked by policy`);
         }
         if (error === 'token_exhausted') {
-          throw new MeshgateOrphanedError(`Token already consumed`, undefined, undefined, 'token_exhausted');
+          throw new MeshgateOrphanedError(
+            `Token already consumed`,
+            undefined,
+            undefined,
+            'token_exhausted',
+          );
         }
         throw new MeshgateAuthError(`Forbidden: ${error || res.statusText}`);
       case 404:
-        throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`, undefined, undefined, 'not_found');
+        throw new MeshgateOrphanedError(
+          `Resource not found: ${error || res.statusText}`,
+          undefined,
+          undefined,
+          'not_found',
+        );
       case 422:
         throw new MeshgateConfigError(`Unprocessable entity: ${error || res.statusText}`);
       case 429: {
-        const retryAfter = Number(res.headers.get('Retry-After') ?? '0');
-        if (retryAfter > 0) await sleep(retryAfter * 1_000);
-        throw new RetryableError(`HTTP 429 rate limit`);
+        throw new RetryableError(
+          `HTTP 429 rate limit`,
+          parseRetryAfterMs(res.headers.get('Retry-After')),
+        );
       }
       case 503:
         throw new MeshgateNetworkError(`Service unavailable (503)`);
@@ -175,8 +194,28 @@ export class MeshgateApiClient {
   }
 }
 
-/** Internal signal: 503 response that should trigger a retry. */
-class RetryableError extends Error {}
+/** Internal signal: retryable response that should trigger another attempt. */
+class RetryableError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1_000;
+  }
+
+  const retryAt = Date.parse(value);
+  if (Number.isNaN(retryAt)) return undefined;
+  return Math.max(0, retryAt - Date.now());
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

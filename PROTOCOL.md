@@ -186,14 +186,14 @@ Throw `MeshgateBlockedError`. Do not call `fn()`.
 
 #### Other error responses
 
-| Status | `error` field      | SDK action                                          |
-| ------ | ------------------ | --------------------------------------------------- |
-| `400`  | `agent_not_found`  | Throw `MeshgateConfigError`                         |
-| `401`  | `unauthorized`     | Throw `MeshgateAuthError`                           |
-| `403`  | `intent_blocked`   | Throw `MeshgateBlockedError`                        |
-| `422`  | `validation_error` | Throw `MeshgateError` (SDK bug — malformed request) |
-| `429`  | —                  | Retry after `Retry-After` header seconds            |
-| `503`  | —                  | Retryable (see §10.1)                               |
+| Status | `error` field      | SDK action                                                |
+| ------ | ------------------ | --------------------------------------------------------- |
+| `400`  | `agent_not_found`  | Throw `MeshgateConfigError`                               |
+| `401`  | `unauthorized`     | Throw `MeshgateAuthError`                                 |
+| `403`  | `intent_blocked`   | Throw `MeshgateBlockedError`                              |
+| `422`  | `validation_error` | Throw `MeshgateConfigError` (SDK bug — malformed request) |
+| `429`  | —                  | Retry after `Retry-After` header seconds                  |
+| `5xx`  | —                  | Retryable (see §10.1)                                     |
 
 ---
 
@@ -677,15 +677,15 @@ KV key: mg:{approvalId}    ← one entry per pending gate
 
 ### 10.1 — POST /v1/intent Retry Logic
 
-| Condition              | Retryable | Backoff                                      | After exhaustion                            |
-| ---------------------- | --------- | -------------------------------------------- | ------------------------------------------- |
-| `503` response         | Yes       | 0s, 1s, 2s (3 attempts)                      | Throw `MeshgateNetworkError`                |
-| Network timeout (>10s) | Yes       | 0s, 1s, 2s (3 attempts)                      | Throw `MeshgateNetworkError`                |
-| `429` response         | Yes       | `Retry-After` header (seconds), then 1 retry | Throw `MeshgateNetworkError` if retry fails |
-| `400`                  | No        | —                                            | Throw `MeshgateConfigError`                 |
-| `401`                  | No        | —                                            | Throw `MeshgateAuthError`                   |
-| `403`                  | No        | —                                            | Throw `MeshgateBlockedError`                |
-| `422`                  | No        | —                                            | Throw `MeshgateError`                       |
+| Condition              | Retryable | Backoff                           | After exhaustion                           |
+| ---------------------- | --------- | --------------------------------- | ------------------------------------------ |
+| `5xx` response         | Yes       | 0s, 1s, 2s (3 attempts)           | Throw `MeshgateNetworkError`               |
+| Network timeout (>10s) | Yes       | 0s, 1s, 2s (3 attempts)           | Throw `MeshgateNetworkError`               |
+| `429` response         | Yes       | `Retry-After` header when present | Throw `MeshgateNetworkError` after retries |
+| `400`                  | No        | —                                 | Throw `MeshgateConfigError`                |
+| `401`                  | No        | —                                 | Throw `MeshgateAuthError`                  |
+| `403`                  | No        | —                                 | Throw `MeshgateBlockedError`               |
+| `422`                  | No        | —                                 | Throw `MeshgateConfigError`                |
 
 **Fail-closed invariant:** If `POST /v1/intent` fails after all retries, the SDK throws `MeshgateNetworkError` and `fn()` is NOT called. There is no bypass for cloud unavailability.
 

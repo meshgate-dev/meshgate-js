@@ -4,6 +4,11 @@ TypeScript SDK for [Meshgate](https://meshgate.dev) — Human-in-the-Loop (HITL)
 
 Wrap any async function with a single `.guard()` call. When policy requires human sign-off, execution suspends automatically, notifies your approver, and resumes with the original arguments once approved — all with end-to-end encryption.
 
+## Releasing
+
+SDK releases must pass the release-candidate checklist before publishing to npm.
+See [RELEASING.md](./RELEASING.md) for details.
+
 ## Installation
 
 ```bash
@@ -22,7 +27,7 @@ yarn add @meshgate/sdk
 import { MeshgateClient } from '@meshgate/sdk';
 
 const client = new MeshgateClient({
-  apiKey: process.env.MESHGATE_API_KEY!,          // mg_live_... or mg_test_...
+  apiKey: process.env.MESHGATE_API_KEY!, // mg_live_... or mg_test_...
   localEncryptionKey: process.env.MESHGATE_LOCAL_SECRET!, // ≥ 32 chars, never sent to cloud
 });
 
@@ -57,10 +62,10 @@ const client = new MeshgateClient({
   // Optional
   baseUrl: 'https://api.meshgate.dev', // default
   storageAdapter: new FileSystemAdapter(), // default on Node.js (see Storage Adapters)
-  debug: false,                           // structured logs to console.log
+  logLevel: 'info', // debug | info | warn | error
 
   hooks: {
-    onGateExpired:  (gate) => console.log('Expired:', gate.approvalId),
+    onGateExpired: (gate) => console.log('Expired:', gate.approvalId),
     onGateRejected: (gate) => console.log('Rejected:', gate.approvalId),
     onGateOrphaned: (gate) => console.log('Orphaned:', gate.approvalId),
     onGateApproved: (gate) => console.log('Approved:', gate.approvalId),
@@ -126,17 +131,23 @@ class PaymentService {
 
 ## Cold Resume After Restart
 
-Gates pending when your process restarted are stored encrypted in the adapter. The `MeshgateClient` constructor automatically scans for and resumes them in the background — no explicit call required. Register all `guard()` functions before constructing the client so the handlers are available when the scan runs.
+Gates pending when your process restarted are stored encrypted in the adapter. The `MeshgateClient` constructor automatically scans for and resumes them in the background — no explicit call required. Register all `guard()` functions synchronously after constructing the client and before your app starts accepting work so the handlers are available when the scan processes stored gates.
 
 ```typescript
-// Register handlers first — they must be available before the background scan runs
+// Construction triggers the background scan automatically.
+const client = new MeshgateClient({
+  apiKey: process.env.MESHGATE_API_KEY!,
+  localEncryptionKey: process.env.MESHGATE_LOCAL_SECRET!,
+});
+
+// Register handlers synchronously after construction and before your app starts
+// accepting work. The startup scan yields before reading storage, so same-tick
+// guard() calls are available for approved gates during cold resume.
 const gatedRefund = client.guard(processRefund, { intent: 'process_refund' });
 const gatedDelete = client.guard(deleteAccount, { intent: 'delete_account' });
 
-// Construction triggers the background scan automatically.
 // Approved gates are re-executed, terminal states are cleaned up,
 // and still-pending gates are re-subscribed to the SSE stream.
-const client = new MeshgateClient({ ... });
 ```
 
 Use lifecycle hooks (`onGateApproved`, `onGateRejected`, `onGateExpired`, `onGateOrphaned`) to observe the outcomes of resumed gates.
@@ -178,17 +189,17 @@ interface MeshgateStorageAdapter {
 
 ## Error Reference
 
-| Error                        | When it's thrown                                              |
-| ---------------------------- | ------------------------------------------------------------- |
-| `MeshgateBlockedError`       | Policy blocks the intent (403)                                |
-| `MeshgateRejectedError`      | Human rejects the approval                                    |
-| `MeshgateExpiredError`       | Gate TTL elapses before approval                              |
-| `MeshgateOrphanedError`      | Token already burned, or approval record not found            |
-| `MeshgateTamperError`        | Decrypted args don't match the hash stored in the cloud       |
-| `MeshgateConfigError`        | Invalid client config or duplicate intent name                |
-| `MeshgateSerializationError` | Non-JSON-serializable argument passed to a guarded function   |
-| `MeshgateAuthError`          | Invalid or insufficient-scope API key (401/403)               |
-| `MeshgateNetworkError`       | Unrecoverable network failure after retries                   |
+| Error                        | When it's thrown                                            |
+| ---------------------------- | ----------------------------------------------------------- |
+| `MeshgateBlockedError`       | Policy blocks the intent (403)                              |
+| `MeshgateRejectedError`      | Human rejects the approval                                  |
+| `MeshgateExpiredError`       | Gate TTL elapses before approval                            |
+| `MeshgateOrphanedError`      | Token already burned, or approval record not found          |
+| `MeshgateTamperError`        | Decrypted args don't match the hash stored in the cloud     |
+| `MeshgateConfigError`        | Invalid client config or duplicate intent name              |
+| `MeshgateSerializationError` | Non-JSON-serializable argument passed to a guarded function |
+| `MeshgateAuthError`          | Invalid or insufficient-scope API key (401/403)             |
+| `MeshgateNetworkError`       | Unrecoverable network failure after retries                 |
 
 All error classes extend `MeshgateError`.
 
@@ -210,12 +221,12 @@ All error classes extend `MeshgateError`.
 
 Arguments to guarded functions must be JSON-serializable:
 
-| Allowed                              | Rejected                          |
-| ------------------------------------ | --------------------------------- |
-| `string`, `number`, `boolean`, `null`| `Date`, `Function`, `Symbol`, `BigInt` |
-| Plain objects `{}`                   | Class instances                   |
-| Arrays `[]`                          | `undefined`                       |
-| Nested plain objects/arrays          | Circular references               |
+| Allowed                               | Rejected                               |
+| ------------------------------------- | -------------------------------------- |
+| `string`, `number`, `boolean`, `null` | `Date`, `Function`, `Symbol`, `BigInt` |
+| Plain objects `{}`                    | Class instances                        |
+| Arrays `[]`                           | `undefined`                            |
+| Nested plain objects/arrays           | Circular references                    |
 
 `getIntentArgs` return values must additionally be **flat** — all values `string | number | boolean`, no nested objects, arrays, or null.
 

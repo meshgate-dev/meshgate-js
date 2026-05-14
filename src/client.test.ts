@@ -204,6 +204,23 @@ describe('MeshgateClient — constructor', () => {
     expect(() => makeClient({ storageAdapter: new NoopAdapter() })).not.toThrow();
   });
 
+  it('throws MeshgateConfigError when default filesystem storage is unavailable', () => {
+    const originalProcess = globalThis.process;
+    vi.stubGlobal('process', undefined);
+
+    try {
+      expect(
+        () =>
+          new MeshgateClient({
+            apiKey: API_KEY,
+            localEncryptionKey: LOCAL_SECRET,
+          }),
+      ).toThrow(MeshgateConfigError);
+    } finally {
+      vi.stubGlobal('process', originalProcess);
+    }
+  });
+
   it('fires _reconcileOnStartup() as a background Promise without blocking constructor', () => {
     // The constructor must return synchronously — void reconcile is fire-and-forget
     const start = Date.now();
@@ -472,6 +489,64 @@ describe('MeshgateClient — guard() gated (201)', () => {
     await expect(wrapped()).rejects.toBeInstanceOf(MeshgateOrphanedError);
     expect(onGateOrphaned).toHaveBeenCalledOnce();
   });
+
+  it('cleans up and rejects when polling fallback receives a terminal status error', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const approvalId = 'appr_poll_missing';
+      const adapter = new NoopAdapter();
+      const deleteSpy = vi.spyOn(adapter, 'delete');
+      const onGateOrphaned = vi.fn();
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes(`/v1/approvals/${approvalId}/status`)) {
+          return makeJsonRes(404, { error: 'not_found' });
+        }
+        throw new Error(`Unexpected: ${url}`);
+      });
+
+      const client = makeClient({
+        storageAdapter: adapter,
+        hooks: { onGateOrphaned },
+      });
+      const gateInfo: GateInfo = {
+        approvalId,
+        intent: 'poll_missing',
+        expiresAt: '2099-01-01T00:00:00Z',
+      };
+      let onTerminated!: (err: unknown) => void;
+      const terminalError = new Promise<unknown>((resolve) => {
+        onTerminated = resolve;
+      });
+      type PendingGateTestEntry = {
+        gateInfo: GateInfo;
+        onApproved: (token: string) => void;
+        onTerminated: (err: unknown) => void;
+      };
+      const entry: PendingGateTestEntry = {
+        gateInfo,
+        onApproved: vi.fn(),
+        onTerminated,
+      };
+      const internals = client as unknown as {
+        pendingGates: Map<string, PendingGateTestEntry>;
+        pollGate(approvalId: string, entry: PendingGateTestEntry): Promise<void>;
+      };
+      internals.pendingGates.set(approvalId, entry);
+      const pollDone = internals.pollGate(approvalId, entry);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(await terminalError).toBeInstanceOf(MeshgateOrphanedError);
+      await pollDone;
+      expect(deleteSpy).toHaveBeenCalledWith(approvalId);
+      expect(onGateOrphaned).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ─── §6 — guard() serialization validation ───────────────────────────────────
@@ -493,7 +568,7 @@ describe('MeshgateClient — guard() serialization', () => {
     const client = makeClient();
     const wrapped = client.guard(async (fn: () => void) => fn(), {
       intent: 'fn_test',
-    } as Parameters<typeof client.guard>[1]);
+    });
 
     await expect(wrapped(() => undefined)).rejects.toBeInstanceOf(MeshgateSerializationError);
     expect(fetchSpy).not.toHaveBeenCalled();

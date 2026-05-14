@@ -68,6 +68,14 @@ var MeshgateAuthError = class extends MeshgateError {
 };
 
 // src/adapters/fs-adapter.ts
+function getDefaultBaseDir() {
+  if (typeof process === "undefined" || typeof process.cwd !== "function") {
+    throw new MeshgateConfigError(
+      "FileSystemAdapter requires Node.js or Bun. Provide CloudflareKVAdapter or NoopAdapter in edge runtimes."
+    );
+  }
+  return process.cwd();
+}
 async function getFsPromises() {
   try {
     return await import('fs/promises');
@@ -81,7 +89,7 @@ var FileSystemAdapter = class {
   baseDir;
   dir;
   constructor(baseDir) {
-    this.baseDir = baseDir ?? process.cwd();
+    this.baseDir = baseDir ?? getDefaultBaseDir();
     this.dir = `${this.baseDir}/.meshgate`;
   }
   keyPath(approvalId) {
@@ -121,7 +129,10 @@ var FileSystemAdapter = class {
     const file = this.keyPath(approvalId);
     let release;
     try {
-      release = await lockfile.lock(file, { stale: 5e3, retries: { retries: 3, minTimeout: 50, maxTimeout: 500 } });
+      release = await lockfile.lock(file, {
+        stale: 5e3,
+        retries: { retries: 3, minTimeout: 50, maxTimeout: 500 }
+      });
       try {
         await fs.unlink(file);
       } catch (unlinkErr) {
@@ -136,7 +147,9 @@ var FileSystemAdapter = class {
           await fs.unlink(file);
         } catch (unlinkErr) {
           if (unlinkErr.code === "ENOENT") return;
-          throw new MeshgateError(`Failed to delete gate record: could not acquire lock after retries`);
+          throw new MeshgateError(
+            `Failed to delete gate record: could not acquire lock after retries`
+          );
         }
         return;
       }
@@ -205,7 +218,10 @@ var MeshgateApiClient = class {
   }
   // ─── POST /v1/intent ───────────────────────────────────────────────────────
   async registerIntent(req) {
-    return this.withRetry(() => this.post("/v1/intent", req, { retryOn503: true }));
+    return this.withRetry(
+      "POST /v1/intent",
+      () => this.post("/v1/intent", req, { retryOn5xx: true })
+    );
   }
   // ─── GET /v1/approvals/:id/status ─────────────────────────────────────────
   getApprovalStatus(approvalId) {
@@ -216,7 +232,8 @@ var MeshgateApiClient = class {
   // ─── POST /v1/verify-token ─────────────────────────────────────────────────
   verifyToken(req) {
     return this.withRetry(
-      () => this.post("/v1/verify-token", req, { retryOn503: true })
+      "POST /v1/verify-token",
+      () => this.post("/v1/verify-token", req, { retryOn5xx: true })
     );
   }
   // ─── Internals ─────────────────────────────────────────────────────────────
@@ -245,23 +262,24 @@ var MeshgateApiClient = class {
     } catch (err) {
       throw new MeshgateNetworkError(`Network error: ${String(err)}`);
     }
-    if (opts.retryOn503 && res.status === 503) {
-      throw new RetryableError(`HTTP 503 from ${path}`);
+    if (opts.retryOn5xx && res.status >= 500) {
+      throw new RetryableError(`HTTP ${res.status} from ${path}`);
     }
     return this.parseResponse(res);
   }
-  async withRetry(fn) {
+  async withRetry(operation, fn) {
     let lastErr;
+    let nextDelayMs = 0;
     for (let i = 0; i < RETRY_DELAYS_MS.length; i++) {
-      const delay = RETRY_DELAYS_MS[i] ?? 0;
-      if (delay > 0) {
-        await sleep(delay);
+      if (nextDelayMs > 0) {
+        await sleep(nextDelayMs);
       }
       try {
         return await fn();
       } catch (err) {
         if (err instanceof RetryableError || err instanceof MeshgateNetworkError) {
           lastErr = err;
+          nextDelayMs = err instanceof RetryableError && err.retryAfterMs !== void 0 ? err.retryAfterMs : RETRY_DELAYS_MS[i + 1] ?? 0;
           continue;
         }
         throw err;
@@ -269,7 +287,7 @@ var MeshgateApiClient = class {
     }
     if (lastErr instanceof MeshgateNetworkError) throw lastErr;
     throw new MeshgateNetworkError(
-      `POST /v1/intent failed after ${RETRY_DELAYS_MS.length} attempts: ${String(lastErr)}`
+      `${operation} failed after ${RETRY_DELAYS_MS.length} attempts: ${String(lastErr)}`
     );
   }
   async parseResponse(res) {
@@ -292,17 +310,28 @@ var MeshgateApiClient = class {
           throw new MeshgateBlockedError(`Intent blocked by policy`);
         }
         if (error === "token_exhausted") {
-          throw new MeshgateOrphanedError(`Token already consumed`, void 0, void 0, "token_exhausted");
+          throw new MeshgateOrphanedError(
+            `Token already consumed`,
+            void 0,
+            void 0,
+            "token_exhausted"
+          );
         }
         throw new MeshgateAuthError(`Forbidden: ${error || res.statusText}`);
       case 404:
-        throw new MeshgateOrphanedError(`Resource not found: ${error || res.statusText}`, void 0, void 0, "not_found");
+        throw new MeshgateOrphanedError(
+          `Resource not found: ${error || res.statusText}`,
+          void 0,
+          void 0,
+          "not_found"
+        );
       case 422:
         throw new MeshgateConfigError(`Unprocessable entity: ${error || res.statusText}`);
       case 429: {
-        const retryAfter = Number(res.headers.get("Retry-After") ?? "0");
-        if (retryAfter > 0) await sleep(retryAfter * 1e3);
-        throw new RetryableError(`HTTP 429 rate limit`);
+        throw new RetryableError(
+          `HTTP 429 rate limit`,
+          parseRetryAfterMs(res.headers.get("Retry-After"))
+        );
       }
       case 503:
         throw new MeshgateNetworkError(`Service unavailable (503)`);
@@ -312,7 +341,22 @@ var MeshgateApiClient = class {
   }
 };
 var RetryableError = class extends Error {
+  constructor(message, retryAfterMs) {
+    super(message);
+    this.retryAfterMs = retryAfterMs;
+  }
+  retryAfterMs;
 };
+function parseRetryAfterMs(value) {
+  if (!value) return void 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1e3;
+  }
+  const retryAt = Date.parse(value);
+  if (Number.isNaN(retryAt)) return void 0;
+  return Math.max(0, retryAt - Date.now());
+}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -720,16 +764,17 @@ var MeshgateClient = class {
       createdAt: Date.now()
     };
     await this.adapter.set(approvalId, JSON.stringify(record));
+    const approvalTokenPromise = new Promise((resolve, reject) => {
+      this.pendingGates.set(approvalId, {
+        gateInfo,
+        onApproved: resolve,
+        onTerminated: reject
+      });
+    });
     this.ensureSseStarted();
     let token;
     try {
-      token = await new Promise((resolve, reject) => {
-        this.pendingGates.set(approvalId, {
-          gateInfo,
-          onApproved: resolve,
-          onTerminated: reject
-        });
-      });
+      token = await approvalTokenPromise;
     } catch (err) {
       await this.adapter.delete(approvalId);
       this.cleanupAfterGate();
@@ -938,17 +983,12 @@ var MeshgateClient = class {
       return false;
     }
     try {
-      await this._verifyDecryptAndExecute(
-        record,
-        gateInfo,
-        token,
-        async (...args) => {
-          try {
-            await handler.fn(...args);
-          } catch {
-          }
+      await this._verifyDecryptAndExecute(record, gateInfo, token, async (...args) => {
+        try {
+          await handler.fn(...args);
+        } catch {
         }
-      );
+      });
     } catch (err) {
       this.pendingGates.delete(record.approvalId);
       if (err instanceof MeshgateTamperError) {
@@ -1023,11 +1063,7 @@ var MeshgateClient = class {
       this.pendingGates.delete(approvalId);
       this.cleanupAfterGate();
       entry.onTerminated(
-        new MeshgateExpiredError(
-          "Gate expired before approval",
-          entry.gateInfo.intent,
-          approvalId
-        )
+        new MeshgateExpiredError("Gate expired before approval", entry.gateInfo.intent, approvalId)
       );
     }
   }
@@ -1047,8 +1083,25 @@ var MeshgateClient = class {
       let status;
       try {
         status = await this.api.getApprovalStatus(approvalId);
-      } catch {
-        continue;
+      } catch (err) {
+        if (err instanceof MeshgateNetworkError) {
+          continue;
+        }
+        await this.adapter.delete(approvalId);
+        this.pendingGates.delete(approvalId);
+        this.cleanupAfterGate();
+        const reason = err instanceof MeshgateOrphanedError && err.reason === "not_found" ? "gate_not_found" : "verify_failed";
+        const message = err instanceof MeshgateAuthError ? `Status polling is not authorized: ${err.message}` : err instanceof Error ? err.message : String(err);
+        await this.fireOrphanedHook({ ...entry.gateInfo, reason, message });
+        entry.onTerminated(
+          new MeshgateOrphanedError(
+            message,
+            entry.gateInfo.intent,
+            approvalId,
+            reason === "gate_not_found" ? "not_found" : void 0
+          )
+        );
+        return;
       }
       if (!this.pendingGates.has(approvalId)) break;
       if (status.status === "approved" && status.token) {
