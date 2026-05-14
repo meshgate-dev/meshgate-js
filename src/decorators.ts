@@ -62,8 +62,7 @@ export function guardrail<TArgs extends unknown[], TReturn>(
     const binding: { self: unknown } = { self: undefined };
 
     const guarded = client.guard(
-      (...args: TArgs): Promise<TReturn> =>
-        originalMethod.call(binding.self, ...args),
+      (...args: TArgs): Promise<TReturn> => originalMethod.call(binding.self, ...args),
       options,
     );
 

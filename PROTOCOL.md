@@ -206,12 +206,14 @@ Throw `MeshgateBlockedError`. Do not call `fn()`.
 ### Request
 
 ```
-GET /v1/events/stream
+GET /v1/events/stream?eventTypes=approval.approved,approval.rejected,approval.expired
 Authorization: Bearer {apiKey}
 Accept: text/event-stream
 ```
 
-No request body.
+No request body. `eventTypes` is optional for compatibility, but SDKs should
+request the terminal approval events they understand instead of subscribing to
+the full tenant stream.
 
 ### Wire Format
 
@@ -285,17 +287,22 @@ Gate TTL elapsed. Clean up local state, fire `onGateExpired` hook, throw `Meshga
 }
 ```
 
-### Client-Side Filtering
+### Stream and Client-Side Filtering
 
-The SSE stream sends ALL approval events for the agent. The SDK must filter client-side:
+The SDK should narrow the stream server-side, then filter client-side by
+approval ID:
 
 ```
-Only act on events where:
-  event.type === 'approval.approved'
+GET /v1/events/stream?eventTypes=approval.approved,approval.rejected,approval.expired
+
+Act on events where:
+  event.type in {'approval.approved', 'approval.rejected', 'approval.expired'}
   AND event.entityId === <your specific approvalId>
 ```
 
-Discard all other events silently.
+Discard all other events silently. Older Meshgate APIs may ignore the query
+parameter and return a broader stream, so client-side approval ID filtering
+remains required.
 
 ### Reconnect Strategy
 

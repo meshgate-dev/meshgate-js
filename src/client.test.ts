@@ -362,6 +362,44 @@ describe('MeshgateClient — guard() gated (201)', () => {
     expect(fn).toHaveBeenCalledWith('hello', 42);
   });
 
+  it('subscribes to approval terminal events instead of the full tenant stream', async () => {
+    const approvalId = 'appr_sse_filter';
+    let capturedGateNonce: string | null = null;
+    let capturedSseUrl: string | null = null;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.endsWith('/v1/intent')) {
+        const body = JSON.parse((init?.body as string) ?? '{}') as { gateNonce?: string };
+        capturedGateNonce = body.gateNonce ?? null;
+        return makeGatedRes(approvalId);
+      }
+      if (url.includes('/v1/events/stream')) {
+        capturedSseUrl = url;
+        return makeSseApprovalStream(approvalId, 'tok_filter');
+      }
+      if (url.endsWith('/v1/verify-token')) {
+        return makeVerifyRes(approvalId, null, capturedGateNonce);
+      }
+      throw new Error(`Unexpected fetch URL in test: ${url}`);
+    });
+
+    const client = makeClient({ baseUrl: 'https://api.meshgate.test/' });
+    const wrapped = client.guard(async () => 'ok', { intent: 'sse_filter_test' });
+
+    await expect(wrapped()).resolves.toBe('ok');
+    expect(capturedSseUrl).toBeTruthy();
+
+    const sseUrl = new URL(capturedSseUrl ?? '');
+    expect(sseUrl.origin).toBe('https://api.meshgate.test');
+    expect(sseUrl.pathname).toBe('/v1/events/stream');
+    expect(sseUrl.searchParams.get('eventTypes')?.split(',')).toEqual([
+      'approval.approved',
+      'approval.rejected',
+      'approval.expired',
+    ]);
+  });
+
   it('deletes adapter record after successful execution', async () => {
     const approvalId = 'appr_gate_003';
     const adapter = new NoopAdapter();

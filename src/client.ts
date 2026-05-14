@@ -80,6 +80,14 @@ const DEFAULT_BASE_URL = 'https://api.meshgate.dev';
 /** Exponential backoff delays for polling fallback, capped at 30 s. */
 const POLL_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
 
+const SDK_SSE_EVENT_TYPES = ['approval.approved', 'approval.rejected', 'approval.expired'] as const;
+
+function buildSseUrl(baseUrl: string): string {
+  const url = new URL('/v1/events/stream', `${baseUrl}/`);
+  url.searchParams.set('eventTypes', SDK_SSE_EVENT_TYPES.join(','));
+  return url.toString();
+}
+
 // ─── MeshgateClient ───────────────────────────────────────────────────────────
 
 export class MeshgateClient {
@@ -154,7 +162,7 @@ export class MeshgateClient {
 
     const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
     this.api = new MeshgateApiClient(config.apiKey, baseUrl);
-    this.sseUrl = `${baseUrl}/v1/events/stream`;
+    this.sseUrl = buildSseUrl(baseUrl);
     this.sseAuthHeader = { Authorization: `Bearer ${config.apiKey}` };
 
     this.adapter = config.storageAdapter ?? new FileSystemAdapter();
@@ -310,7 +318,9 @@ export class MeshgateClient {
     await this.adapter.set(approvalId, JSON.stringify(record));
 
     // Register the pending gate before opening SSE so an immediate connection
-    // failure can safely fall back to polling this approval.
+    // failure can safely fall back to polling this approval. The SSE URL asks
+    // the server for terminal approval events, and we still filter locally by
+    // approvalId for compatibility with older or broader streams.
     const approvalTokenPromise = new Promise<string>((resolve, reject) => {
       this.pendingGates.set(approvalId, {
         gateInfo,
