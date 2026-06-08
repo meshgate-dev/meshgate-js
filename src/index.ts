@@ -51,7 +51,30 @@ export {
   MeshgateConfigError,
   MeshgateSerializationError,
   MeshgateAuthError,
+  MeshgateWaitTimeoutError,
 } from './errors.js';
 
 // ─── MeshgateClient ──────────────────────────────────────────────────────────
 export { MeshgateClient } from './client.js';
+export { MeshgateApprovalClient } from './approvals.js';
+export type { MeshgateApprovalClientConfig, ExternalApprovalWaitOptions } from './approvals.js';
+
+// ─── External Approval API Types ─────────────────────────────────────────────
+export type {
+  ExternalApprovalDecision,
+  ExternalApprovalEventFilter,
+  ExternalApprovalEvidence,
+  ExternalApprovalEvidenceAppendInput,
+  ExternalApprovalEvidenceInput,
+  ExternalApprovalEvidenceOutcome,
+  ExternalApprovalEvidenceType,
+  ExternalApprovalRedactionState,
+  ExternalApprovalRequestInput,
+  ExternalApprovalResumeMode,
+  ExternalApprovalRiskLevel,
+  ExternalApprovalRoleHint,
+  ExternalApprovalStatus,
+  ExternalApprovalStatusResponse,
+  ExternalApprovalTerminalResponse,
+  ExternalApprovalTerminalStatus,
+} from './api/types.js';

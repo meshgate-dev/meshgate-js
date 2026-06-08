@@ -103,6 +103,135 @@ export interface ApprovalStatusResponse {
   gateNonce: string | null;
 }
 
+// ─── External Approval Requests ─────────────────────────────────────────────
+
+export type ExternalApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
+export type ExternalApprovalTerminalStatus = Exclude<ExternalApprovalStatus, 'pending'>;
+export type ExternalApprovalRiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type ExternalApprovalResumeMode = 'poll' | 'events';
+export type ExternalApprovalRoleHint = 'viewer' | 'operator' | 'admin';
+
+export type ExternalApprovalEvidenceType =
+  | 'policy_decision'
+  | 'risk_signal'
+  | 'tool_arguments'
+  | 'runtime_trace'
+  | 'human_note';
+
+export type ExternalApprovalEvidenceOutcome =
+  | 'allowed'
+  | 'gated'
+  | 'blocked'
+  | 'flagged'
+  | 'informational';
+
+export type ExternalApprovalRedactionState =
+  | 'none'
+  | 'summary_only'
+  | 'redacted'
+  | 'external_ref_only';
+
+export interface ExternalApprovalEvidenceInput {
+  evidenceType: ExternalApprovalEvidenceType;
+  label: string;
+  summary: string;
+  outcome?: ExternalApprovalEvidenceOutcome;
+  riskLevel?: ExternalApprovalRiskLevel;
+  policyId?: string;
+  ruleId?: string;
+  traceId?: string;
+  payloadJson?: Record<string, unknown> | null;
+  payloadRef?: string;
+  redactionState?: ExternalApprovalRedactionState;
+}
+
+export interface ExternalApprovalRequestInput {
+  agentId?: string;
+  sourceSystem: string;
+  externalRequestId?: string;
+  sourceRunId?: string;
+  sourceStepId?: string;
+  actionName: string;
+  actionSummary: string;
+  payloadSummary?: string;
+  payloadRef?: string;
+  policyEngine?: string;
+  policyId?: string;
+  ruleId?: string;
+  riskLevel?: ExternalApprovalRiskLevel;
+  requestedTeamId?: string;
+  requestedRole?: ExternalApprovalRoleHint;
+  resumeMode?: ExternalApprovalResumeMode;
+  expiresAt?: string;
+  expiresInSeconds?: number;
+  idempotencyKey: string;
+  evidence?: ExternalApprovalEvidenceInput[];
+}
+
+export interface ExternalApprovalEvidenceAppendInput extends ExternalApprovalEvidenceInput {
+  idempotencyKey: string;
+}
+
+export interface ExternalApprovalDecision {
+  outcome: ExternalApprovalTerminalStatus;
+  resolvedAt: string | null;
+  note: string | null;
+}
+
+export interface ExternalApprovalEvidence {
+  id: string;
+  evidenceType: ExternalApprovalEvidenceType;
+  label: string;
+  summary: string;
+  outcome: ExternalApprovalEvidenceOutcome | null;
+  riskLevel: ExternalApprovalRiskLevel | null;
+  policyId: string | null;
+  ruleId: string | null;
+  traceId: string | null;
+  payloadJson?: Record<string, unknown> | null;
+  payloadRef: string | null;
+  redactionState: ExternalApprovalRedactionState;
+  createdAt: string;
+}
+
+export interface ExternalApprovalEventFilter {
+  entityType: 'approval';
+  entityId: string;
+  eventTypes: Array<'approval.approved' | 'approval.rejected' | 'approval.expired'>;
+}
+
+export interface ExternalApprovalStatusResponse {
+  approvalId: string;
+  status: ExternalApprovalStatus;
+  sourceSystem: string;
+  externalRequestId: string | null;
+  actionName: string;
+  actionSummary: string;
+  payloadSummary: string | null;
+  payloadRef: string | null;
+  policyEngine: string | null;
+  policyId: string | null;
+  ruleId: string | null;
+  riskLevel: ExternalApprovalRiskLevel | null;
+  resumeMode: ExternalApprovalResumeMode;
+  eventFilter: ExternalApprovalEventFilter;
+  decision: ExternalApprovalDecision | null;
+  evidence?: ExternalApprovalEvidence[];
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export type ExternalApprovalTerminalResponse = ExternalApprovalStatusResponse & {
+  status: ExternalApprovalTerminalStatus;
+};
+
+interface DataEnvelope<T> {
+  data: T;
+}
+
+export type ExternalApprovalStatusEnvelope = DataEnvelope<ExternalApprovalStatusResponse>;
+export type ExternalApprovalEvidenceEnvelope = DataEnvelope<ExternalApprovalEvidence>;
+
 // ─── POST /v1/verify-token ───────────────────────────────────────────────────
 
 /** Request body for POST /v1/verify-token */
