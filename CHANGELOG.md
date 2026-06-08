@@ -1,5 +1,11 @@
 # @meshgate/sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- ca3ff39: Add external approval request helpers for framework runtimes: request Meshgate-managed approvals, append approval-linked evidence, read approval status, and poll for terminal human decisions.
+
 ## 0.2.3
 
 ### Patch Changes
