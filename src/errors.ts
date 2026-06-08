@@ -161,3 +161,11 @@ export class MeshgateSerializationError extends MeshgateError {}
  * HTTP trigger: any cloud endpoint → 401, or POST /v1/verify-token → 403 `forbidden`
  */
 export class MeshgateAuthError extends MeshgateError {}
+
+/**
+ * Thrown when an external approval wait helper times out or is aborted locally.
+ *
+ * The approval itself may still be pending in Meshgate. Callers should either
+ * keep polling with `approvals.get()` or reconnect to the filtered event stream.
+ */
+export class MeshgateWaitTimeoutError extends MeshgateError {}

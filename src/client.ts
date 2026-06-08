@@ -25,6 +25,7 @@ import { FileSystemAdapter } from './adapters/fs-adapter.js';
 import type { MeshgateStorageAdapter } from './adapters/types.js';
 import { MeshgateApiClient } from './api/client.js';
 import type { ApprovalStatusResponse, SseEvent } from './api/types.js';
+import { MeshgateApprovalClient } from './approvals.js';
 import {
   MeshgateAuthError,
   MeshgateBlockedError,
@@ -91,6 +92,8 @@ function buildSseUrl(baseUrl: string): string {
 // ─── MeshgateClient ───────────────────────────────────────────────────────────
 
 export class MeshgateClient {
+  readonly approvals: MeshgateApprovalClient;
+
   private readonly api: MeshgateApiClient;
   private readonly adapter: MeshgateStorageAdapter;
   private readonly masterSecret: string;
@@ -162,6 +165,7 @@ export class MeshgateClient {
 
     const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
     this.api = new MeshgateApiClient(config.apiKey, baseUrl);
+    this.approvals = new MeshgateApprovalClient(this.api);
     this.sseUrl = buildSseUrl(baseUrl);
     this.sseAuthHeader = { Authorization: `Bearer ${config.apiKey}` };
 

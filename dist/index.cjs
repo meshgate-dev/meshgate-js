@@ -72,6 +72,8 @@ var MeshgateSerializationError = class extends MeshgateError {
 };
 var MeshgateAuthError = class extends MeshgateError {
 };
+var MeshgateWaitTimeoutError = class extends MeshgateError {
+};
 
 // src/adapters/fs-adapter.ts
 function getDefaultBaseDir() {
@@ -235,6 +237,33 @@ var MeshgateApiClient = class {
       `/v1/approvals/${encodeURIComponent(approvalId)}/status`
     );
   }
+  // ─── External approval requests ───────────────────────────────────────────
+  async createApprovalRequest(req) {
+    const res = await this.withRetry(
+      "POST /v1/approval-requests",
+      () => this.post("/v1/approval-requests", req, {
+        retryOn5xx: true
+      })
+    );
+    return res.data;
+  }
+  async getExternalApprovalRequest(approvalId) {
+    const res = await this.get(
+      `/v1/approval-requests/${encodeURIComponent(approvalId)}`
+    );
+    return res.data;
+  }
+  async appendApprovalRequestEvidence(approvalId, req) {
+    const res = await this.withRetry(
+      "POST /v1/approval-requests/:approvalId/evidence",
+      () => this.post(
+        `/v1/approval-requests/${encodeURIComponent(approvalId)}/evidence`,
+        req,
+        { retryOn5xx: true }
+      )
+    );
+    return res.data;
+  }
   // ─── POST /v1/verify-token ─────────────────────────────────────────────────
   verifyToken(req) {
     return this.withRetry(
@@ -365,6 +394,70 @@ function parseRetryAfterMs(value) {
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// src/approvals.ts
+var DEFAULT_BASE_URL = "https://api.meshgate.dev";
+var DEFAULT_POLL_INTERVAL_MS = 2e3;
+var DEFAULT_TIMEOUT_MS = 24 * 60 * 60 * 1e3;
+var MeshgateApprovalClient = class {
+  api;
+  constructor(configOrApi) {
+    this.api = configOrApi instanceof MeshgateApiClient ? configOrApi : new MeshgateApiClient(configOrApi.apiKey, configOrApi.baseUrl ?? DEFAULT_BASE_URL);
+  }
+  request(input) {
+    return this.api.createApprovalRequest(input);
+  }
+  get(approvalId) {
+    return this.api.getExternalApprovalRequest(approvalId);
+  }
+  addEvidence(approvalId, input) {
+    return this.api.appendApprovalRequestEvidence(approvalId, input);
+  }
+  async waitForDecision(approvalId, options = {}) {
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const startedAt = Date.now();
+    while (true) {
+      throwIfAborted(options.signal);
+      const approval = await this.get(approvalId);
+      if (approval.status !== "pending") {
+        return approval;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw new MeshgateWaitTimeoutError(
+          `Approval ${approvalId} did not reach a terminal decision before timeout`,
+          void 0,
+          approvalId
+        );
+      }
+      await sleepWithSignal(pollIntervalMs, options.signal);
+    }
+  }
+};
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw new MeshgateWaitTimeoutError("Approval wait was aborted");
+}
+function sleepWithSignal(ms, signal) {
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new MeshgateWaitTimeoutError("Approval wait was aborted"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new MeshgateWaitTimeoutError("Approval wait was aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 // src/utils/base64.ts
@@ -604,9 +697,16 @@ function sleep2(ms) {
 }
 
 // src/client.ts
-var DEFAULT_BASE_URL = "https://api.meshgate.dev";
+var DEFAULT_BASE_URL2 = "https://api.meshgate.dev";
 var POLL_DELAYS_MS = [1e3, 2e3, 4e3, 8e3, 16e3, 3e4];
+var SDK_SSE_EVENT_TYPES = ["approval.approved", "approval.rejected", "approval.expired"];
+function buildSseUrl(baseUrl) {
+  const url = new URL("/v1/events/stream", `${baseUrl}/`);
+  url.searchParams.set("eventTypes", SDK_SSE_EVENT_TYPES.join(","));
+  return url.toString();
+}
 var MeshgateClient = class {
+  approvals;
   api;
   adapter;
   masterSecret;
@@ -663,9 +763,10 @@ var MeshgateClient = class {
     this.logger = createLogger(this.logLevel);
     this.hooks = config.hooks ?? {};
     this.sseReconnectDelays = config.sseReconnectDelays ?? [0, 1e3, 2e3];
-    const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+    const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL2).replace(/\/$/, "");
     this.api = new MeshgateApiClient(config.apiKey, baseUrl);
-    this.sseUrl = `${baseUrl}/v1/events/stream`;
+    this.approvals = new MeshgateApprovalClient(this.api);
+    this.sseUrl = buildSseUrl(baseUrl);
     this.sseAuthHeader = { Authorization: `Bearer ${config.apiKey}` };
     this.adapter = config.storageAdapter ?? new FileSystemAdapter();
     this._reconcileReady = new Promise((resolve) => {
@@ -1235,6 +1336,7 @@ function sleep3(ms) {
 
 exports.CloudflareKVAdapter = CloudflareKVAdapter;
 exports.FileSystemAdapter = FileSystemAdapter;
+exports.MeshgateApprovalClient = MeshgateApprovalClient;
 exports.MeshgateAuthError = MeshgateAuthError;
 exports.MeshgateBlockedError = MeshgateBlockedError;
 exports.MeshgateClient = MeshgateClient;
@@ -1246,6 +1348,7 @@ exports.MeshgateOrphanedError = MeshgateOrphanedError;
 exports.MeshgateRejectedError = MeshgateRejectedError;
 exports.MeshgateSerializationError = MeshgateSerializationError;
 exports.MeshgateTamperError = MeshgateTamperError;
+exports.MeshgateWaitTimeoutError = MeshgateWaitTimeoutError;
 exports.NoopAdapter = NoopAdapter;
 //# sourceMappingURL=index.cjs.map
 //# sourceMappingURL=index.cjs.map

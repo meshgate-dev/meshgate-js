@@ -30,6 +30,11 @@ import {
 } from '../errors.js';
 import type {
   ApprovalStatusResponse,
+  ExternalApprovalEvidenceAppendInput,
+  ExternalApprovalEvidenceEnvelope,
+  ExternalApprovalRequestInput,
+  ExternalApprovalStatusEnvelope,
+  ExternalApprovalStatusResponse,
   IntentRequest,
   IntentResponse,
   VerifyTokenRequest,
@@ -65,6 +70,40 @@ export class MeshgateApiClient {
     return this.get<ApprovalStatusResponse>(
       `/v1/approvals/${encodeURIComponent(approvalId)}/status`,
     );
+  }
+
+  // ─── External approval requests ───────────────────────────────────────────
+
+  async createApprovalRequest(
+    req: ExternalApprovalRequestInput,
+  ): Promise<ExternalApprovalStatusResponse> {
+    const res = await this.withRetry('POST /v1/approval-requests', () =>
+      this.post<ExternalApprovalStatusEnvelope>('/v1/approval-requests', req, {
+        retryOn5xx: true,
+      }),
+    );
+    return res.data;
+  }
+
+  async getExternalApprovalRequest(approvalId: string): Promise<ExternalApprovalStatusResponse> {
+    const res = await this.get<ExternalApprovalStatusEnvelope>(
+      `/v1/approval-requests/${encodeURIComponent(approvalId)}`,
+    );
+    return res.data;
+  }
+
+  async appendApprovalRequestEvidence(
+    approvalId: string,
+    req: ExternalApprovalEvidenceAppendInput,
+  ): Promise<ExternalApprovalEvidenceEnvelope['data']> {
+    const res = await this.withRetry('POST /v1/approval-requests/:approvalId/evidence', () =>
+      this.post<ExternalApprovalEvidenceEnvelope>(
+        `/v1/approval-requests/${encodeURIComponent(approvalId)}/evidence`,
+        req,
+        { retryOn5xx: true },
+      ),
+    );
+    return res.data;
   }
 
   // ─── POST /v1/verify-token ─────────────────────────────────────────────────

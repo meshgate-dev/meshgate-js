@@ -176,6 +176,137 @@ describe('MeshgateApiClient', () => {
     });
   });
 
+  // ─── external approval requests ───────────────────────────────────────────
+
+  describe('external approval requests', () => {
+    it('creates an external approval request and unwraps the data envelope', async () => {
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeRes(201, {
+          data: {
+            approvalId: 'app_ext_123',
+            status: 'pending',
+            sourceSystem: 'openai-agents',
+            externalRequestId: null,
+            actionName: 'send_wire',
+            actionSummary: 'Send a wire transfer',
+            payloadSummary: null,
+            payloadRef: null,
+            policyEngine: 'agt',
+            policyId: null,
+            ruleId: null,
+            riskLevel: 'high',
+            resumeMode: 'poll',
+            eventFilter: {
+              entityType: 'approval',
+              entityId: 'app_ext_123',
+              eventTypes: ['approval.approved', 'approval.rejected', 'approval.expired'],
+            },
+            decision: null,
+            evidence: [],
+            expiresAt: '2099-01-01T00:00:00Z',
+            createdAt: '2026-06-01T00:00:00Z',
+          },
+        }),
+      );
+
+      const res = await client.createApprovalRequest({
+        sourceSystem: 'openai-agents',
+        actionName: 'send_wire',
+        actionSummary: 'Send a wire transfer',
+        policyEngine: 'agt',
+        riskLevel: 'high',
+        idempotencyKey: 'run_123:send_wire',
+      });
+
+      expect(res.approvalId).toBe('app_ext_123');
+      const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`${BASE_URL}/v1/approval-requests`);
+      expect(init.method).toBe('POST');
+      expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_KEY}`);
+    });
+
+    it('gets an external approval request and URL-encodes the approvalId', async () => {
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeRes(200, {
+          data: {
+            approvalId: 'app/a',
+            status: 'approved',
+            sourceSystem: 'custom-runtime',
+            externalRequestId: null,
+            actionName: 'release_message',
+            actionSummary: 'Release quarantined message',
+            payloadSummary: null,
+            payloadRef: null,
+            policyEngine: null,
+            policyId: null,
+            ruleId: null,
+            riskLevel: null,
+            resumeMode: 'events',
+            eventFilter: {
+              entityType: 'approval',
+              entityId: 'app/a',
+              eventTypes: ['approval.approved', 'approval.rejected', 'approval.expired'],
+            },
+            decision: {
+              outcome: 'approved',
+              resolvedAt: '2026-06-01T00:01:00Z',
+              note: null,
+            },
+            evidence: [],
+            expiresAt: null,
+            createdAt: '2026-06-01T00:00:00Z',
+          },
+        }),
+      );
+
+      const res = await client.getExternalApprovalRequest('app/a');
+
+      expect(res.status).toBe('approved');
+      expect(spy).toHaveBeenCalledWith(
+        `${BASE_URL}/v1/approval-requests/app%2Fa`,
+        expect.any(Object),
+      );
+    });
+
+    it('appends approval-linked evidence and unwraps the data envelope', async () => {
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        makeRes(201, {
+          data: {
+            id: 'evd_123',
+            evidenceType: 'risk_signal',
+            label: 'Prompt injection detector',
+            summary: 'Matched instruction override text.',
+            outcome: 'flagged',
+            riskLevel: 'high',
+            policyId: null,
+            ruleId: null,
+            traceId: 'trace_123',
+            payloadRef: null,
+            redactionState: 'summary_only',
+            createdAt: '2026-06-01T00:00:00Z',
+          },
+        }),
+      );
+
+      const res = await client.appendApprovalRequestEvidence('app_ext_123', {
+        evidenceType: 'risk_signal',
+        label: 'Prompt injection detector',
+        summary: 'Matched instruction override text.',
+        outcome: 'flagged',
+        riskLevel: 'high',
+        traceId: 'trace_123',
+        redactionState: 'summary_only',
+        idempotencyKey: 'run_123:risk_signal',
+      });
+
+      expect(res.id).toBe('evd_123');
+      expect(spy).toHaveBeenCalledWith(
+        `${BASE_URL}/v1/approval-requests/app_ext_123/evidence`,
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+  });
+
   // ─── verifyToken ───────────────────────────────────────────────────────────
 
   describe('verifyToken', () => {

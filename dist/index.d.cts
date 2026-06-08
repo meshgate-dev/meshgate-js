@@ -1,5 +1,5 @@
-import { a as MeshgateStorageAdapter } from './client-uGII_v8r.cjs';
-export { b as GateInfo, c as GateLifecycleHook, d as GateOrphanedEvent, e as GateOrphanedReason, f as GatePayload, G as GuardOptions, M as MeshgateClient, g as MeshgateConfig, S as StoredGateRecord } from './client-uGII_v8r.cjs';
+import { a as MeshgateStorageAdapter } from './client-CFc_gF3Z.cjs';
+export { E as ExternalApprovalDecision, b as ExternalApprovalEventFilter, c as ExternalApprovalEvidence, d as ExternalApprovalEvidenceAppendInput, e as ExternalApprovalEvidenceInput, f as ExternalApprovalEvidenceOutcome, g as ExternalApprovalEvidenceType, h as ExternalApprovalRedactionState, i as ExternalApprovalRequestInput, j as ExternalApprovalResumeMode, k as ExternalApprovalRiskLevel, l as ExternalApprovalRoleHint, m as ExternalApprovalStatus, n as ExternalApprovalStatusResponse, o as ExternalApprovalTerminalResponse, p as ExternalApprovalTerminalStatus, q as ExternalApprovalWaitOptions, r as GateInfo, s as GateLifecycleHook, t as GateOrphanedEvent, u as GateOrphanedReason, v as GatePayload, G as GuardOptions, w as MeshgateApprovalClient, x as MeshgateApprovalClientConfig, M as MeshgateClient, y as MeshgateConfig, S as StoredGateRecord } from './client-CFc_gF3Z.cjs';
 
 /**
  * A storage adapter that performs no I/O.
@@ -249,5 +249,13 @@ declare class MeshgateSerializationError extends MeshgateError {
  */
 declare class MeshgateAuthError extends MeshgateError {
 }
+/**
+ * Thrown when an external approval wait helper times out or is aborted locally.
+ *
+ * The approval itself may still be pending in Meshgate. Callers should either
+ * keep polling with `approvals.get()` or reconnect to the filtered event stream.
+ */
+declare class MeshgateWaitTimeoutError extends MeshgateError {
+}
 
-export { CloudflareKVAdapter, FileSystemAdapter, type KVNamespaceLike, MeshgateAuthError, MeshgateBlockedError, MeshgateConfigError, MeshgateError, MeshgateExpiredError, MeshgateNetworkError, MeshgateOrphanedError, MeshgateRejectedError, MeshgateSerializationError, MeshgateStorageAdapter, MeshgateTamperError, NoopAdapter };
+export { CloudflareKVAdapter, FileSystemAdapter, type KVNamespaceLike, MeshgateAuthError, MeshgateBlockedError, MeshgateConfigError, MeshgateError, MeshgateExpiredError, MeshgateNetworkError, MeshgateOrphanedError, MeshgateRejectedError, MeshgateSerializationError, MeshgateStorageAdapter, MeshgateTamperError, MeshgateWaitTimeoutError, NoopAdapter };
