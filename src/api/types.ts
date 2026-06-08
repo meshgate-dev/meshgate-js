@@ -149,8 +149,6 @@ export interface ExternalApprovalRequestInput {
   agentId?: string;
   sourceSystem: string;
   externalRequestId?: string;
-  sourceRunId?: string;
-  sourceStepId?: string;
   actionName: string;
   actionSummary: string;
   payloadSummary?: string;
